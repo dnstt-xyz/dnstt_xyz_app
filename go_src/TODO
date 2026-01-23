@@ -1,0 +1,41 @@
+In -dot mode, if, after the TLS connection may become disconnected, the
+redial fails to connect, it results in "operation on closed connection"
+errors and a useless connection up until idleTimeout (2 to 4 minutes
+later), when the stream ends. For example, see
+1-12c59bf6/quad9_dot_1.dnstt.client.log from the 2021-08-02 dnstt-tests
+performance measurement:
+	2021/08/02 10:00:49 recvLoop: read tcp 10.0.1.2:34788->9.9.9.9:853: read: connection reset by peer
+	2021/08/02 10:00:49 sendLoop: write tcp 10.0.1.2:34788->9.9.9.9:853: write: broken pipe
+	2021/08/02 10:00:50 tls.Dial: dial tcp 9.9.9.9:853: connect: connection refused
+	2021/08/02 10:00:50 recvLoop: read dummy dummy: operation on closed connection
+	2021/08/02 10:00:50 send: write dummy dummy: operation on closed connection
+	2021/08/02 10:00:52 send: write dummy dummy: operation on closed connection
+	...
+	2021/08/02 10:03:02 send: write dummy dummy: operation on closed connection
+	2021/08/02 10:03:06 send: write dummy dummy: operation on closed connection
+	2021/08/02 10:03:09 end stream cde4ab0c:3
+To fix this, we could be more persistent in redialing, and/or cause a
+redial failure to cause the stream and session to terminate immediately.
+We already close TLSPacketConn; we should perhaps also terminate
+DNSPacketConn.sendLoop.
+
+Randomize the source port for each query in plain-UDP mode. Currently we
+create a socket with net.ListenUDP and use it for all queries, which
+means all queries have the same source address. ValdikSS reports that in
+regions of Turkmenistan, UDP associations that use the same 4-tuple are
+blocked after a few seconds.
+https://ntc.party/t/topic/475
+My idea for this is to create a new PacketConn abstraction that creates
+a bunch (≈100) of goroutines that each do a single query at a time,
+creating a new socket for each one and waiting for a response on the
+same socket up to a timeout. Similar to HTTPPacketConn and its multiple
+instantiations of sendLoop.
+
+Add support for DNS over QUIC
+https://www.rfc-editor.org/rfc/rfc9250
+https://dnsprivacy.org/wiki/display/DP/DNS+Privacy+Public+Resolvers#DNSPrivacyPublicResolvers-DNS-over-QUIC(DoQ)
+https://github.com/AdguardTeam/dnsproxy/blob/660a2da99eb6cc2cf5db9a54f1374dd58fbb5b26/upstream/upstream_quic.go
+https://security.googleblog.com/2022/07/dns-over-http3-in-android.html
+
+Externally resolve another domain for the DoH domain, like curl --resolve
+E.g. cloudflare.net -> doh.dns.sb

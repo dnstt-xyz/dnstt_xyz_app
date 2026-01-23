@@ -1,0 +1,235 @@
+.\" https://man.openbsd.org/mdoc.7
+.Dd 2020-08-30
+.Dt DNSTT-SERVER 1
+.Os
+
+
+.Sh NAME
+
+.Nm dnstt-server
+.Nd DNS tunnel server
+
+
+.Sh SYNOPSIS
+
+.Nm
+.Fl gen-key
+.Op Fl privkey-file Ar FILENAME
+.Op Fl pubkey-file Ar FILENAME
+
+.Nm
+.Fl udp Ar ADDR : Ns Ar PORT
+.Op Fl privkey Ar HEX | Fl privkey-file Ar FILENAME
+.Op Fl mtu Ar MTU
+.Ar DOMAIN
+.Ar UPSTREAMADDR : Ns Ar UPSTREAMPORT
+
+
+.Sh DESCRIPTION
+
+.Nm
+is the server portion of a DNS tunnel.
+It receives DNS over UDP messages at
+.Ar ADDR : Ns Ar PORT ,
+decodes the streams they contain,
+and forwards the streams as TCP connections to
+.Ar UPSTREAMADDR : Ns Ar UPSTREAMPORT .
+.Nm acts as the authoritative name server for
+.Ar DOMAIN
+and communicates with an instance of
+.Xr dnstt-client 1
+via a recursive resolver.
+
+.Ss GENERATING A SERVER KEYPAIR
+
+The tunnel client
+encrypts and authenticates the tunneled connection
+using the server's public key.
+To generate a server keypair, use the
+.Fl gen-key
+option.
+Use the
+.Fl privkey-file
+and
+.Fl pubkey-file
+options to save the generated private key,
+public key, or both,
+to a file.
+
+.Bl -tag
+
+.It Fl gen-key
+Generate a server keypair.
+
+.It Fl privkey-file Ar FILENAME
+With
+.Fl gen-key ,
+save the generated private key to
+.Ar FILENAME .
+
+.It Fl pubkey-file Ar FILENAME
+With
+.Fl gen-key ,
+save the generated public key to
+.Ar FILENAME .
+
+.El
+
+.Pp
+On the server, you only need to store the private key, because
+.Nm
+can derive the public key from the private key.
+The client only needs to have the server's public key
+and should not know the servers private key.
+
+.Ss RUNNING THE SERVER
+
+The required
+.Fl udp
+option specifies the UDP address on which
+.Nm
+listens for incoming DNS messages.
+
+.Bl -tag
+.It Fl udp Ar ADDR : Ns Ar PORT
+Accept DNS messages at the given address.
+.Ar PORT
+must typically be 53
+when operating with a recursive intermediate resolver,
+unless you have made some other provision for forwarding
+port 53 to
+.Ar PORT .
+
+.El
+
+.Pp
+Specify the server's persistent keypair using the
+.Fl privkey
+or
+.Fl privkey-file
+options.
+If you do not use one of these options,
+.Nm
+generates a temporary keypair
+and logs the public key to standard error.
+
+.Bl -tag
+
+.It Fl privkey Ar HEX
+.Ar HEX
+is a string of 64 hexadecimal digits.
+
+.It Fl privkey-file Ar FILENAME
+.Ar FILENAME
+is the name of a file containing
+64 hexadecimal digits and an
+optional training newline character.
+
+.El
+
+.Pp
+In some situations, you may have to use the
+.Fl mtu
+option to control the maximum UDP payload size.
+
+.Bl -tag
+
+.It Fl mtu Ar MTU
+Never send UDP payloads larger than
+.Ar MTU
+bytes.
+The default
+.Ar MTU
+is 1232, but some recursive resolver only support a maximum of 512.
+You will know you need to use the
+.Fl mtu
+option when you see messages like this on standard error:
+.Dl FORMERR: requester payload size 512 is too small (minimum 1232)
+
+.El
+
+
+.Sh EXAMPLES
+
+Generate a keypair.
+Save the private key to the file
+.Cm server.key
+and the public key to
+.Cm server.pub .
+Next, you would typically copy
+.Pa server.pub
+to the client.
+
+.Bd -literal -offset indent
+dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
+.Ed
+
+.Pp
+Accept DNS messages at the UDP address
+.Cm 0.0.0.0:53 ,
+decode the streams contained therein,
+and forward the streams as TCP connections to
+.Cm 127.0.0.1:8000 .
+Read the private key from the file
+.Cm server.key
+and derive the public key from it.
+The server should be configured to be
+the authoritative name server for the domain
+.Cm t.example.com .
+
+.Bd -literal -offset indent
+dnstt-server -udp 127.0.0.1:53 -privkey-file server.key t.example.com 127.0.0.1:8000
+.Ed
+
+
+.Sh DIAGNOSTICS
+
+.Nm
+writes running logs to standard error.
+
+At startup,
+.Nm
+logs its public key.
+This string can be used with the
+.Fl -pubkey
+option in
+.Xr dnstt-client 1 .
+
+.Dl pubkey 14ca15f53660e248d289d9302f992c4bee518f2361d6343dafa7b417b5a3d752
+
+.Pp
+At startup,
+.Nm
+logs the amount of useful payload capacity that can be stored
+in each DNS response, after accounting for the overhead of encoding.
+This number will vary depending on the length of
+.Ar DOMAIN
+and the value of
+.Ar MTU .
+
+.Dl effective MTU 932
+
+
+.Pp
+If the recursive resolver's stated maximum UDP payload size
+is smaller than
+.Ar MTU ,
+.Nm
+will log a message like this,
+which tells you that you need to use the
+.Fl mtu
+option.
+
+.Dl FORMERR: requester payload size 512 is too small (minimum 1232)
+
+
+.Sh SEE ALSO
+
+.Xr dnstt-client 1
+
+.Lk https://www.bamsoftware.com/software/dnstt/
+
+
+.Sh AUTHORS
+
+.An David Fifield Aq Mt david@bamsoftware.com

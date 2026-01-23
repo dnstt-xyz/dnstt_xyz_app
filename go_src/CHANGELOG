@@ -1,0 +1,118 @@
+## v1.20240513.0
+
+Updated utls to v1.6.6. Added a "random" fingerprint ID that maps to
+uTLS's HelloRandomizedALPN. The default uTLS fingerprint distribution in
+dnstt-client is now
+4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13
+
+
+## v1.20220208.0
+
+-doh and -dot mode use uTLS to camouflage their TLS Client Hello
+fingerprint. The fingerprint to use is chosen randomly from a weighted
+distribution. You can control this distribution using the new -utls
+option. Use "-utls none" to disable uTLS if you encounter TLS errors
+with your chosen server. This change means that it is no longer possible
+to use a proxy in -doh mode by setting the HTTP_PROXY or HTTPS_PROXY
+environment variables; this was an undocumented side effect of using the
+Go net/http package with no TLS camouflage.
+
+
+## v1.20210812.0
+
+Fixed an injection vulnerability in the dnstt-server log message
+"NXDOMAIN: not authoritative for %s". This log message contains a
+potentially attacker-controlled name. Because DNS labels may contain any
+byte value, the log message allowed an attacker to write arbitrary bytes
+to the dnstt-server log, with a variety of effects:
+* A label containing a newline could break the format of the log, or be
+  used to inject false log lines.
+* Log output to a terminal could contain terminal escape sequences which
+  could, for example, change the color of text, or have worse effects
+  with older terminal emulators (https://seclists.org/bugtraq/2003/Feb/315).
+* DNS names with a label that contained the dot character (\x2e) would
+  be logged in an ambiguous way, with the intra-label dot appearing as a
+  label separator.
+DNS names are now logged using backslash hex escapes for unusual bytes.
+This vulnerability was called to mind by "Injection Attacks Reloaded:
+Tunnelling Malicious Payloads over DNS" by Jeitner and Shulman.
+https://www.usenix.org/conference/usenixsecurity21/presentation/jeitner
+
+Inhibited some "io: read/write on closed pipe" log messages.
+
+
+## v1.20210803.0
+
+Performance tuning. Enlarge some buffers and network receive windows to
+permit faster downloads in some configurations. Adjusted the dynamic
+polling model to work more as intended, and tweaked the server send loop
+to continue bundling outgoing packets as long as some are immediately
+available.
+
+Reduce idle timeout from 10 minutes to 2 minutes. Terminated sessions
+will be reclaimed more quickly.
+
+Documentation updates.
+
+
+## v0.20210424.0
+
+dnstt was part of a software security audit done by Cure53. The report
+found issues of severity levels Low–Medium in dnstt and in one of its
+dependencies, a package used for Noise cryptography. This release fixes
+the following issues:
+ * UCB-02-002: Memory leak in acceptStreams() routine of dnstt server (Low)
+ * UCB-02-003: Potential nonce overflow in Noise protocol (Medium)
+ * UCB-02-004: Deprecated DH25519 Golang API used by Noise (Low)
+ * UCB-02-006: DoS due to unconditional nonce increment (Low)
+ * UCB-02-007: DoS due to missing socket timeouts (Low)
+Unaddressed in this release are:
+ * UCB-02-005: Client ID security considerations & Noise authenticated data (Low)
+ * UCB-02-008: Lack of rate limiting in Snowflake and dnstt (Info)
+Two other issues in the report, UCB-02-001 and UCB-02-009, do not have
+to do with dnstt. For more details and the text of the report, see
+https://www.bamsoftware.com/software/dnstt/security.html#cure53-turbotunnel-2021
+
+Added man pages for dnstt-client and dnstt-server.
+
+
+## v0.20200506.0
+
+Documentation updates.
+
+
+## v0.20200504.0
+
+Documentation updates and link to web page.
+https://www.bamsoftware.com/software/dnstt/
+
+
+## v0.20200430.0
+
+Send leftover packets (those that were too big to fit in the current DNS
+response) to the correct client in the future. Before, such leftover
+packets were included in the next response to be sent, regardless of the
+client it was intended for.
+
+Fix the loop that packs packets into responses in the server. Before, if
+there were not a packet immediately available, the response would always
+be empty. Now, a packet has until the response timeout to be included.
+
+Buffer the DoT transport in the client so that length prefixes and DNS
+queries happen in the same send.
+
+Don't look for encoded packets in a response that was too short to
+contain a ClientID.
+
+
+## v0.20200426.0
+
+Added the -mtu command-line option to the server.
+
+Documentation fixes.
+
+
+## v0.20200419.0
+
+Initial public release and announcement.
+https://github.com/net4people/bbs/issues/30

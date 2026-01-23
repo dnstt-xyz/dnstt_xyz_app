@@ -1,0 +1,121 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code related
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+pubspec.lock
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+/android/.gradle/
+/android/local.properties
+/android/gradle-wrapper.jar
+/android/**/GeneratedPluginRegistrant.*
+/android/captures/
+/android/gradlew
+/android/gradlew.bat
+/android/.externalNativeBuild/
+
+# iOS/XCode related
+/ios/Flutter/App.framework
+/ios/Flutter/Flutter.framework
+/ios/Flutter/Generated.xcconfig
+/ios/.symlinks/
+/ios/Pods/
+/ios/Runner.xcworkspace/xcshareddata/
+/ios/Runner.xcworkspace/xcuserdata/
+/ios/Runner.xcodeproj/xcuserdata/
+/ios/Runner.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Windows specific
+/windows/flutter/generated_plugin_registrant.cc
+/windows/flutter/generated_plugin_registrant.h
+
+# Linux specific
+/linux/flutter/generated_plugin_registrant.cc
+/linux/flutter/generated_plugin_registrant.h
+
+# macOS specific
+/macos/Flutter/ephemeral/
+/macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Web specific
+/web/favicon.png
+/web/icons/Icon-192.png
+/web/icons/Icon-512.png
+/web/manifest.json
+
+# Test related
+/coverage/
+
+# Exceptions to above rules
+!/android/app/libs/*.aar
+
+# Key files (should not be committed)
+*.jks
+*.keystore
+key.properties
+
+# Build artifacts and archives
+*.zip
+/app/
+
+# Claude files
+.claude/
+
+# Duplicate dnstt source (we have it in go_src/)
+/android/dnstt-20241021/
+
+# Binary files
+/android/app/src/main/assets/dnstt-client-*
+/android/app/src/main/jniLibs/
+
+# Go build artifacts
+go_src/*.aar
+go_src/*.jar
+go_src/*.dylib
+go_src/*.dll
+go_src/*.so
+go_src/*.h
+
+# Rust build artifacts
+rust_src/.android-build/
+rust_src/target/
+
+# Slipstream rust
+slipstream-rust/

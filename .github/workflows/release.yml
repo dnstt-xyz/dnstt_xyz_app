@@ -1,0 +1,303 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        default: 'v2.0.0'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+          channel: 'stable'
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build APKs (split by ABI)
+        run: flutter build apk --release --split-per-abi --obfuscate --split-debug-info=/tmp/debug-info
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-x86_64-release.apk
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+          channel: 'stable'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go library for macOS ARM64
+        run: |
+          cd go_src
+          CGO_ENABLED=1 GOARCH=arm64 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libdnstt.dylib ./desktop
+          mkdir -p ../macos/Runner/Libraries
+          cp libdnstt.dylib ../macos/Runner/Libraries/
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build macOS app
+        run: flutter build macos --release
+
+      - name: Copy dylib to app bundle
+        run: |
+          cp go_src/libdnstt.dylib build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/
+          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/libdnstt.dylib
+          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "DNSTT Client" \
+            -srcfolder build/macos/Build/Products/Release/DNSTT_XYZ.app \
+            -ov -format UDZO \
+            DNSTT-Client-macOS-arm64.dmg
+
+      - name: Upload macOS ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-dmg
+          path: DNSTT-Client-macOS-arm64.dmg
+
+  build-macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+          channel: 'stable'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go library for macOS Intel
+        run: |
+          cd go_src
+          CGO_ENABLED=1 GOARCH=amd64 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libdnstt.dylib ./desktop
+          mkdir -p ../macos/Runner/Libraries
+          cp libdnstt.dylib ../macos/Runner/Libraries/
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build macOS app
+        run: flutter build macos --release
+
+      - name: Copy dylib to app bundle
+        run: |
+          cp go_src/libdnstt.dylib build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/
+          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/libdnstt.dylib
+          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "DNSTT Client" \
+            -srcfolder build/macos/Build/Products/Release/DNSTT_XYZ.app \
+            -ov -format UDZO \
+            DNSTT-Client-macOS-intel.dmg
+
+      - name: Upload macOS Intel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-intel-dmg
+          path: DNSTT-Client-macOS-intel.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+          channel: 'stable'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go library for Windows
+        run: |
+          cd go_src
+          $env:CGO_ENABLED=1
+          go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dnstt.dll ./desktop
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Windows app
+        run: flutter build windows --release
+
+      - name: Copy DLL to build
+        run: |
+          Copy-Item go_src/dnstt.dll build/windows/x64/runner/Release/
+
+      - name: Create ZIP archive
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath DNSTT-Client-Windows.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: DNSTT-Client-Windows.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+          channel: 'stable'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go library for Linux
+        run: |
+          cd go_src
+          CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libdnstt.so ./desktop
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Linux app
+        run: flutter build linux --release
+
+      - name: Copy library to build
+        run: |
+          cp go_src/libdnstt.so build/linux/x64/release/bundle/lib/
+
+      - name: Create tarball
+        run: |
+          cd build/linux/x64/release/bundle
+          tar -czvf ../../../../../DNSTT-Client-Linux.tar.gz .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: DNSTT-Client-Linux.tar.gz
+
+  create-release:
+    needs: [build-android, build-macos-arm64, build-macos-intel, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Get version number
+        id: version
+        run: |
+          VERSION=${{ github.event.inputs.version || github.ref_name }}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Rename artifacts
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p release
+          # Android APKs
+          cp artifacts/android-apks/app-armeabi-v7a-release.apk "release/DNSTT-Client-${VERSION}-Android-armeabi-v7a.apk"
+          cp artifacts/android-apks/app-arm64-v8a-release.apk "release/DNSTT-Client-${VERSION}-Android-arm64-v8a.apk"
+          cp artifacts/android-apks/app-x86_64-release.apk "release/DNSTT-Client-${VERSION}-Android-x86_64.apk"
+          # macOS
+          cp artifacts/macos-arm64-dmg/DNSTT-Client-macOS-arm64.dmg "release/DNSTT-Client-${VERSION}-macOS-arm64.dmg"
+          cp artifacts/macos-intel-dmg/DNSTT-Client-macOS-intel.dmg "release/DNSTT-Client-${VERSION}-macOS-intel.dmg"
+          # Other Desktop
+          cp artifacts/windows-zip/DNSTT-Client-Windows.zip "release/DNSTT-Client-${VERSION}-Windows.zip"
+          cp artifacts/linux-tarball/DNSTT-Client-Linux.tar.gz "release/DNSTT-Client-${VERSION}-Linux.tar.gz"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: DNSTT Client ${{ github.event.inputs.version || github.ref_name }}
+          body: |
+            ## DNSTT Client Release
+
+            ### Downloads
+
+            #### Android
+            - **ARM64 (64-bit)** - Most modern Android phones
+            - **ARMv7 (32-bit)** - Older Android phones
+            - **x86_64** - Emulators/Chromebooks
+
+            #### macOS
+            - **Apple Silicon (M1/M2/M3)**
+            - **Intel**
+
+            #### Other Desktop
+            - **Windows**
+            - **Linux**
+
+            ### Notes
+            - **Android**: Tunnels all device traffic through DNS (VPN mode)
+            - **Desktop**: Runs a SOCKS5 proxy on `127.0.0.1:7000` - configure your apps to use this proxy
+
+            ### How to Use (Desktop)
+            1. Download and install the app for your platform
+            2. Add your DNSTT configuration (tunnel domain + public key)
+            3. Select a DNS server
+            4. Click Connect
+            5. Configure your browser/apps to use SOCKS5 proxy: `127.0.0.1:7000`
+          draft: false
+          prerelease: false
+          files: |
+            release/*
