@@ -36,18 +36,18 @@ Download the latest release from the [Releases](https://github.com/dnstt-xyz/dns
 
 | File | Architecture | Devices |
 |------|--------------|---------|
-| `DNSTT-Client-v2.0.0-Android-arm64-v8a.apk` | ARM 64-bit | Modern Android phones |
-| `DNSTT-Client-v2.0.0-Android-armeabi-v7a.apk` | ARM 32-bit | Older Android phones |
-| `DNSTT-Client-v2.0.0-Android-x86_64.apk` | x86_64 | Emulators, Chromebooks |
+| `DNSTT-Client-*-Android-arm64-v8a.apk` | ARM 64-bit | Modern Android phones |
+| `DNSTT-Client-*-Android-armeabi-v7a.apk` | ARM 32-bit | Older Android phones |
+| `DNSTT-Client-*-Android-x86_64.apk` | x86_64 | Emulators, Chromebooks |
 
 ### Desktop
 
 | File | Platform |
 |------|----------|
-| `DNSTT-Client-v2.0.0-macOS-arm64.dmg` | macOS (Apple Silicon M1/M2/M3) |
-| `DNSTT-Client-v2.0.0-macOS-intel.dmg` | macOS (Intel) |
-| `DNSTT-Client-v2.0.0-Windows.zip` | Windows |
-| `DNSTT-Client-v2.0.0-Linux.tar.gz` | Linux |
+| `DNSTT-Client-*-macOS-arm64.dmg` | macOS (Apple Silicon M1/M2/M3) |
+| `DNSTT-Client-*-macOS-intel.dmg` | macOS (Intel) |
+| `DNSTT-Client-*-Windows.zip` | Windows |
+| `DNSTT-Client-*-Linux.tar.gz` | Linux |
 
 ## Usage
 
