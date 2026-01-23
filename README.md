@@ -143,11 +143,12 @@ The app requires:
 
 ## Support
 
-If you find this project useful, consider supporting its development:
+If you find this project useful, consider supporting its development. Your support helps maintain servers and continue development.
 
-- **USDT (TON)**: `UQDmneQbT0bDQpsHxVmMZfq4wCHXw4xzLzU6jMji-vK9S1US`
+- **USDT (Tron/TRC20)**: `TMBF7T8BpLhSkpauNUzcFHmHSEYL1Ucq5X`
+- **USDT (Ethereum)**: `0xD2c70A2518E928cFeAF749Db39E67e073dB3E59a`
+- **USDC (Ethereum)**: `0xD2c70A2518E928cFeAF749Db39E67e073dB3E59a`
 - **Bitcoin**: `bc1q770vn8d65tq0jdh0zm4qkl7j47m6has0e2pkg6`
-- **Ethereum**: `0xD2c70A2518E928cFeAF749Db39E67e073dB3E59a`
 - **Solana**: `2hhrPoRocPHrWLYW7a7kENu3ZS2rXpBBCmaCfBsd9wdo`
 
 ## Links
