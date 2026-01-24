@@ -1,0 +1,9 @@
+DNSTT Client tunnels your internet traffic through DNS queries using the dnstt protocol. This creates a VPN connection that routes all device traffic through DNS, helping bypass network restrictions.
+
+Features:
+* Full device VPN tunneling on Android
+* DNS server testing and management
+* Multiple DNSTT configuration support
+* Built-in DNS server list
+
+The app uses the dnstt protocol which encodes data in DNS TXT queries, providing an alternative method to access the internet when other protocols are blocked.
