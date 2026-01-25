@@ -43,7 +43,7 @@ class BundledDnsService {
 
   /// Get list of available country files
   static const List<String> _countryFiles = [
-    'ae', 'af', 'bd', 'cn', 'co', 'id', 'ir', 'kw', 'pk', 'qa', 'ru', 'sy', 'tr', 'ug', 'uz'
+    'global', 'ae', 'af', 'bd', 'cn', 'co', 'id', 'ir', 'kw', 'pk', 'qa', 'ru', 'sy', 'tr', 'ug', 'uz'
   ];
 
   /// Country code to flag emoji mapping

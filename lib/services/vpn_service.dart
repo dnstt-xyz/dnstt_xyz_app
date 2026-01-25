@@ -39,25 +39,12 @@ class VpnService {
   bool _isProxyMode = false;
   bool get isProxyMode => _isProxyMode;
 
-  // Proxy sharing mode (allows connections from other devices on the network)
-  bool _isProxySharing = false;
-  bool get isProxySharing => _isProxySharing;
-
-  // Cached local IP addresses
-  List<String> _localIpAddresses = [];
-
   /// Check if we're on a desktop platform
   static bool get isDesktopPlatform =>
       Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
   /// Get the SOCKS proxy address when connected on desktop
   String get socksProxyAddress => '127.0.0.1:1080';
-
-  /// Get the proxy address for sharing (using local IP)
-  String getSharedProxyAddress(String localIp) => '$localIp:1080';
-
-  /// Get cached local IP addresses
-  List<String> get localIpAddresses => _localIpAddresses;
 
   /// Get the last error message
   String? get lastError => _lastError;
@@ -108,7 +95,6 @@ class VpnService {
       case 'ssh_tunnel_disconnected':
         _isProxyMode = false;
         _isSshTunnelMode = false;
-        _isProxySharing = false;
         return VpnState.disconnected;
       case 'connecting':
         return VpnState.connecting;
@@ -162,6 +148,9 @@ class VpnService {
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
+    // Reset all mode flags for regular VPN mode
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
 
     _connectedDns = dnsServer;
     _connectedDomain = tunnelDomain;
@@ -229,6 +218,10 @@ class VpnService {
     required String tunnelDomain,
     required String publicKey,
   }) async {
+    // Ensure mode flags are reset for regular DNSTT mode
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
+
     // Allow UI to update before blocking FFI calls
     await Future.delayed(const Duration(milliseconds: 50));
 
@@ -344,21 +337,16 @@ class VpnService {
     required String publicKey,
     required String sshUsername,
     String? sshPassword,
-    bool shareProxy = false,
   }) async {
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
+    // Reset all mode flags and set SSH tunnel mode
+    _isProxyMode = false;
     _isSshTunnelMode = true;
-    _isProxySharing = shareProxy;
 
     _connectedDns = dnsServer;
     _connectedDomain = tunnelDomain;
-
-    // Get local IP addresses if sharing is enabled
-    if (shareProxy) {
-      await _getLocalIpAddressesDesktopAsync();
-    }
 
     try {
       // Step 1: Start DNSTT tunnel on internal port 7001 (forwards to SSH server)
@@ -404,8 +392,7 @@ class VpnService {
       await Future.delayed(const Duration(seconds: 2));
 
       // Step 2: Start SSH with dynamic port forwarding on port 1080
-      // Use 0.0.0.0:1080 for sharing, just 1080 for local only (defaults to localhost)
-      final bindAddress = shareProxy ? '0.0.0.0:1080' : '1080';
+      final bindAddress = '1080';
 
       // DNSTT creates a SOCKS5 proxy on port 7001, so SSH must use ProxyCommand
       // to connect through the SOCKS5 proxy to the SSH server (via tunnel)
@@ -567,6 +554,8 @@ class VpnService {
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
+    // Reset all mode flags and set proxy mode
+    _isSshTunnelMode = false;
     _isProxyMode = true;
 
     _connectedDns = dnsServer;
@@ -626,7 +615,6 @@ class VpnService {
       _connectedDns = null;
       _connectedDomain = null;
       _isProxyMode = false;
-      _isProxySharing = false;
       _stateController.add(_currentState);
       return true;
     }
@@ -637,14 +625,12 @@ class VpnService {
       _connectedDns = null;
       _connectedDomain = null;
       _isProxyMode = false;
-      _isProxySharing = false;
       _stateController.add(_currentState);
       return result ?? true;
     } on MissingPluginException {
       _platformSupported = false;
       _currentState = VpnState.disconnected;
       _isProxyMode = false;
-      _isProxySharing = false;
       _stateController.add(_currentState);
       return true;
     } on PlatformException catch (e) {
@@ -675,199 +661,6 @@ class VpnService {
     }
   }
 
-  /// Get local IP addresses for proxy sharing
-  Future<List<String>> getLocalIpAddresses() async {
-    if (_isDesktop) {
-      return _getLocalIpAddressesDesktopAsync();
-    }
-
-    if (!_platformSupported) {
-      return [];
-    }
-
-    try {
-      final result = await _channel.invokeMethod<List<dynamic>>('getLocalIpAddresses');
-      _localIpAddresses = result?.cast<String>() ?? [];
-      return _localIpAddresses;
-    } on MissingPluginException {
-      return [];
-    } on PlatformException catch (e) {
-      print('Get local IP addresses error: ${e.message}');
-      return [];
-    }
-  }
-
-  /// Get local IP addresses on desktop (async)
-  Future<List<String>> _getLocalIpAddressesDesktopAsync() async {
-    final addresses = <String>[];
-    try {
-      final interfaces = await NetworkInterface.list(
-        includeLoopback: false,
-        type: InternetAddressType.IPv4,
-      );
-      for (final interface in interfaces) {
-        for (final addr in interface.addresses) {
-          if (!addr.isLoopback && addr.type == InternetAddressType.IPv4) {
-            final ip = addr.address;
-            // Only include private network addresses
-            if (ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.')) {
-              addresses.add(ip);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      print('Error getting local IP addresses: $e');
-    }
-    _localIpAddresses = addresses;
-    return addresses;
-  }
-
-  /// Connect in proxy mode with sharing enabled (allows connections from other devices)
-  Future<bool> connectProxyShared({
-    String? dnsServer,
-    String? tunnelDomain,
-    String? publicKey,
-    int proxyPort = 1080,
-  }) async {
-    if (_isDesktop) {
-      // Desktop: Connect with proxy sharing enabled via FFI
-      return _connectProxySharedDesktop(
-        dnsServer: dnsServer ?? '8.8.8.8',
-        tunnelDomain: tunnelDomain ?? '',
-        publicKey: publicKey ?? '',
-      );
-    }
-
-    _currentState = VpnState.connecting;
-    _stateController.add(_currentState);
-    _lastError = null;
-    _isProxyMode = true;
-    _isProxySharing = true;
-
-    _connectedDns = dnsServer;
-    _connectedDomain = tunnelDomain;
-
-    // Get local IP addresses for display
-    await getLocalIpAddresses();
-
-    if (!_platformSupported) {
-      await Future.delayed(const Duration(milliseconds: 1500));
-      _currentState = VpnState.connected;
-      _stateController.add(_currentState);
-      return true;
-    }
-
-    try {
-      final result = await _channel.invokeMethod<bool>('connectProxyShared', {
-        'dnsServer': dnsServer ?? '8.8.8.8',
-        'tunnelDomain': tunnelDomain ?? '',
-        'publicKey': publicKey ?? '',
-        'proxyPort': proxyPort,
-      });
-
-      if (result == true) {
-        _currentState = VpnState.connected;
-      } else {
-        _currentState = VpnState.error;
-        _isProxyMode = false;
-        _isProxySharing = false;
-      }
-      _stateController.add(_currentState);
-      return result ?? false;
-    } on MissingPluginException {
-      _platformSupported = false;
-      await Future.delayed(const Duration(milliseconds: 1500));
-      _currentState = VpnState.connected;
-      _stateController.add(_currentState);
-      return true;
-    } on PlatformException catch (e) {
-      print('Shared proxy connect error: ${e.message}');
-      _lastError = e.message;
-      _currentState = VpnState.error;
-      _isProxyMode = false;
-      _isProxySharing = false;
-      _stateController.add(_currentState);
-      return false;
-    }
-  }
-
-  /// Connect proxy with sharing on desktop
-  Future<bool> _connectProxySharedDesktop({
-    required String dnsServer,
-    required String tunnelDomain,
-    required String publicKey,
-  }) async {
-    _currentState = VpnState.connecting;
-    _stateController.add(_currentState);
-    _lastError = null;
-    _isProxySharing = true;
-
-    _connectedDns = dnsServer;
-    _connectedDomain = tunnelDomain;
-
-    // Get local IP addresses for display
-    await _getLocalIpAddressesDesktopAsync();
-
-    await Future.delayed(const Duration(milliseconds: 50));
-
-    try {
-      final ffi = DnsttFfiService.instance;
-
-      if (!ffi.isLoaded) {
-        _lastError = 'FFI library not loaded';
-        _currentState = VpnState.error;
-        _isProxySharing = false;
-        _stateController.add(_currentState);
-        return false;
-      }
-
-      // Create the client with 0.0.0.0 binding for sharing
-      final created = ffi.createClient(
-        dnsServer: dnsServer,
-        tunnelDomain: tunnelDomain,
-        publicKey: publicKey,
-        listenAddr: '0.0.0.0:1080',
-      );
-
-      if (!created) {
-        _lastError = ffi.getLastError();
-        _currentState = VpnState.error;
-        _isProxySharing = false;
-        _stateController.add(_currentState);
-        return false;
-      }
-
-      final started = ffi.start();
-      if (!started) {
-        _lastError = ffi.getLastError();
-        _currentState = VpnState.error;
-        _isProxySharing = false;
-        _stateController.add(_currentState);
-        return false;
-      }
-
-      _currentState = VpnState.connected;
-      _stateController.add(_currentState);
-      return true;
-    } catch (e) {
-      _lastError = e.toString();
-      _currentState = VpnState.error;
-      _isProxySharing = false;
-      _stateController.add(_currentState);
-      return false;
-    }
-  }
-
-  /// Disconnect proxy with sharing disabled
-  Future<bool> disconnectProxyShared() async {
-    _isProxySharing = false;
-    if (_isDesktop) {
-      return disconnect();
-    }
-    return disconnectProxy();
-  }
-
   /// Connect SSH tunnel over DNSTT
   /// Flow: DNSTT tunnel -> SSH client -> SSH dynamic port forwarding -> local SOCKS5 proxy on port 1080
   Future<bool> connectSshTunnel({
@@ -877,7 +670,6 @@ class VpnService {
     required String sshUsername,
     String? sshPassword,
     String? sshPrivateKey,
-    bool shareProxy = false,
   }) async {
     if (_isDesktop) {
       return _connectSshTunnelDesktop(
@@ -886,23 +678,18 @@ class VpnService {
         publicKey: publicKey ?? '',
         sshUsername: sshUsername,
         sshPassword: sshPassword,
-        shareProxy: shareProxy,
       );
     }
 
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
+    // Reset all mode flags and set SSH tunnel mode
+    _isProxyMode = false;
     _isSshTunnelMode = true;
-    _isProxySharing = shareProxy;
 
     _connectedDns = dnsServer;
     _connectedDomain = tunnelDomain;
-
-    // Get local IP addresses if sharing is enabled
-    if (shareProxy) {
-      await getLocalIpAddresses();
-    }
 
     if (!_platformSupported) {
       await Future.delayed(const Duration(milliseconds: 1500));
@@ -919,14 +706,12 @@ class VpnService {
         'sshUsername': sshUsername,
         'sshPassword': sshPassword,
         'sshPrivateKey': sshPrivateKey,
-        'shareProxy': shareProxy,
       });
 
       if (result == true) {
         _currentState = VpnState.connected;
       } else {
         _currentState = VpnState.error;
-        _isProxySharing = false;
         _isSshTunnelMode = false;
       }
       _stateController.add(_currentState);
@@ -972,6 +757,8 @@ class VpnService {
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
+    // Reset all mode flags and set SSH tunnel mode
+    _isProxyMode = false;
     _isSshTunnelMode = true;
 
     _connectedDns = dnsServer;

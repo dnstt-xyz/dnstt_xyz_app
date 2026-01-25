@@ -123,6 +123,7 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
               builder: (context, state, _) {
                 final hasServers = state.dnsServers.isNotEmpty;
                 final isTestingAll = state.isTestingAll;
+                final isTestingSupported = state.isTestingSupported;
 
                 return Column(
                   children: [
@@ -142,13 +143,15 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                                   ),
                                 )
                               : ElevatedButton.icon(
-                                  onPressed: hasServers
+                                  onPressed: hasServers && isTestingSupported
                                       ? () => _testAllDnsServers(context)
-                                      : null,
+                                      : hasServers && !isTestingSupported
+                                          ? () => _showTestingNotSupportedError(context, state)
+                                          : null,
                                   icon: const Icon(Icons.speed),
                                   label: const Text('Test All'),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.blue,
+                                    backgroundColor: isTestingSupported ? Colors.blue : Colors.grey,
                                     foregroundColor: Colors.white,
                                   ),
                                 ),
@@ -196,6 +199,44 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                         child: Text(
                           'Select a DNSTT config first to test DNS servers',
                           style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+              // Show error banner if testing is not supported for this config type
+              if (!state.isTestingSupported) {
+                return Container(
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.error_outline, color: Colors.red[700], size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              state.testingUnsupportedMessage,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.red[700],
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'DNS testing is only available for DNSTT SOCKS5 configs',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                          ],
                         ),
                       ),
                     ],
@@ -317,9 +358,17 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                                     )
                                   : IconButton(
                                       padding: EdgeInsets.zero,
-                                      icon: const Icon(Icons.speed, size: 22),
-                                      onPressed: () => _testSingleDns(context, server),
-                                      tooltip: 'Test this DNS',
+                                      icon: Icon(
+                                        Icons.speed,
+                                        size: 22,
+                                        color: state.isTestingSupported ? null : Colors.grey,
+                                      ),
+                                      onPressed: state.isTestingSupported
+                                          ? () => _testSingleDns(context, server)
+                                          : () => _showTestingNotSupportedError(context, state),
+                                      tooltip: state.isTestingSupported
+                                          ? 'Test this DNS'
+                                          : state.testingUnsupportedMessage,
                                     ),
                             ),
                             // Delete button
@@ -440,6 +489,46 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
 
     // Use AppState to handle testing (persists across screen changes)
     await state.testSingleDnsServer(server);
+  }
+
+  void _showTestingNotSupportedError(BuildContext context, AppState state) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.error_outline, color: Colors.red[700]),
+            const SizedBox(width: 8),
+            const Text('Testing Not Available'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              state.testingUnsupportedMessage,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'DNS server testing is only available for DNSTT SOCKS5 configurations.',
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'To test DNS servers, please select a DNSTT config with SOCKS5 tunnel type (not SSH).',
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _testAllDnsServers(BuildContext context) async {

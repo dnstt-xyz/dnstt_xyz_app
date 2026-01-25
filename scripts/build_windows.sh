@@ -27,14 +27,16 @@ if ! command -v go &> /dev/null; then
 fi
 
 # Build the DLL for Windows
+# -trimpath removes filesystem paths from binary (privacy)
+# -ldflags="-s -w" strips debug info and symbol table (smaller size)
 echo "Building dnstt.dll..."
 if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "win32" ]]; then
     # Native Windows build
-    CGO_ENABLED=1 go build -buildmode=c-shared -o dnstt.dll ./desktop
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dnstt.dll ./desktop
 else
     # Cross-compilation from Linux/macOS (requires mingw-w64)
     echo "Cross-compiling for Windows (requires mingw-w64)..."
-    GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go build -buildmode=c-shared -o dnstt.dll ./desktop
+    GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dnstt.dll ./desktop
 fi
 
 if [ ! -f "dnstt.dll" ]; then

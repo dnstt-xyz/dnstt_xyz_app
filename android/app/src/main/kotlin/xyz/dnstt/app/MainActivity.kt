@@ -51,12 +51,12 @@ class MainActivity : FlutterActivity() {
     private val runningTests = ConcurrentHashMap<Int, TestContext>()
     private val testsCancelled = AtomicBoolean(false)
 
-    // Proxy-only mode (no VPN)
-    private var proxyClient: mobile.DnsttClient? = null
+    // Proxy-only mode (no VPN) - now uses DnsttProxyService
     private val proxyScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val isProxyRunning = AtomicBoolean(false)
 
     // SSH tunnel mode (DNSTT + SSH dynamic port forwarding)
+    // sshDnsttClient is the internal DNSTT client used by SSH tunnel (runs on port 7001)
+    private var sshDnsttClient: mobile.DnsttClient? = null
     private var sshTunnelClient: SshTunnelClient? = null
     private val isSshTunnelRunning = AtomicBoolean(false)
 
@@ -117,7 +117,7 @@ class MainActivity : FlutterActivity() {
                     disconnectProxyOnly(result)
                 }
                 "isProxyConnected" -> {
-                    result.success(isProxyRunning.get())
+                    result.success(DnsttProxyService.isRunning.get())
                 }
                 "connectSshTunnel" -> {
                     val dnsServer = call.argument<String>("dnsServer") ?: "8.8.8.8"
@@ -156,20 +156,9 @@ class MainActivity : FlutterActivity() {
                 "setProxySharing" -> {
                     val enabled = call.argument<Boolean>("enabled") ?: false
                     isProxySharingEnabled.set(enabled)
-                    // If proxy is already running, we need to restart it with the new setting
-                    if (isProxyRunning.get() && proxyClient != null) {
-                        proxyScope.launch {
-                            try {
-                                val wasEnabled = proxyClient?.isShareProxyEnabled ?: false
-                                if (wasEnabled != enabled) {
-                                    proxyClient?.setShareProxy(enabled)
-                                    Log.d("DnsttProxy", "Proxy sharing ${if (enabled) "enabled" else "disabled"}")
-                                }
-                            } catch (e: Exception) {
-                                Log.e("DnsttProxy", "Error changing proxy sharing: ${e.message}")
-                            }
-                        }
-                    }
+                    // Note: If proxy is already running via service, it would need to be restarted
+                    // to change sharing mode. For simplicity, just store the preference.
+                    Log.d("DnsttProxy", "Proxy sharing preference set to: $enabled")
                     result.success(true)
                 }
                 "isProxySharingEnabled" -> {
@@ -280,6 +269,7 @@ class MainActivity : FlutterActivity() {
     }
 
     // Proxy-only mode methods (no VPN, just TCP forwarding through DNSTT)
+    // Now uses DnsttProxyService to run in background
     private fun connectProxyOnly(
         dnsServer: String,
         tunnelDomain: String,
@@ -287,63 +277,42 @@ class MainActivity : FlutterActivity() {
         proxyPort: Int,
         result: MethodChannel.Result
     ) {
-        if (isProxyRunning.get()) {
+        if (DnsttProxyService.isRunning.get()) {
             result.success(true)
             return
         }
 
-        Log.d("DnsttProxy", "Starting proxy-only mode on port $proxyPort")
+        Log.d("DnsttProxy", "Starting proxy service on port $proxyPort")
 
-        proxyScope.launch {
-            try {
-                val listenAddr = "127.0.0.1:$proxyPort"
-                proxyClient = Mobile.newClient(dnsServer, tunnelDomain, publicKey, listenAddr)
-                proxyClient?.start()
-                isProxyRunning.set(true)
-
-                Log.d("DnsttProxy", "Proxy started on $listenAddr")
-
-                // Notify state change
-                runOnUiThread {
-                    eventSink?.success("proxy_connected")
-                    result.success(true)
-                }
-            } catch (e: Exception) {
-                Log.e("DnsttProxy", "Failed to start proxy: ${e.message}", e)
-                isProxyRunning.set(false)
-                runOnUiThread {
-                    eventSink?.success("proxy_error")
-                    result.success(false)
-                }
+        // Set up state callback to receive events from service
+        DnsttProxyService.stateCallback = { state ->
+            runOnUiThread {
+                eventSink?.success(state)
             }
         }
+
+        // Start the proxy service
+        val serviceIntent = Intent(this, DnsttProxyService::class.java).apply {
+            action = DnsttProxyService.ACTION_CONNECT
+            putExtra(DnsttProxyService.EXTRA_DNS_SERVER, dnsServer)
+            putExtra(DnsttProxyService.EXTRA_TUNNEL_DOMAIN, tunnelDomain)
+            putExtra(DnsttProxyService.EXTRA_PUBLIC_KEY, publicKey)
+            putExtra(DnsttProxyService.EXTRA_PROXY_PORT, proxyPort)
+            putExtra(DnsttProxyService.EXTRA_SHARE_PROXY, false)
+        }
+        startForegroundService(serviceIntent)
+        result.success(true)
     }
 
     private fun disconnectProxyOnly(result: MethodChannel.Result) {
-        Log.d("DnsttProxy", "Stopping proxy-only mode")
+        Log.d("DnsttProxy", "Stopping proxy service")
 
-        proxyScope.launch {
-            try {
-                proxyClient?.stop()
-                proxyClient = null
-                isProxyRunning.set(false)
-                isProxySharingEnabled.set(false)
-
-                Log.d("DnsttProxy", "Proxy stopped")
-
-                runOnUiThread {
-                    eventSink?.success("proxy_disconnected")
-                    result.success(true)
-                }
-            } catch (e: Exception) {
-                Log.e("DnsttProxy", "Error stopping proxy: ${e.message}", e)
-                isProxyRunning.set(false)
-                isProxySharingEnabled.set(false)
-                runOnUiThread {
-                    result.success(true)
-                }
-            }
+        val serviceIntent = Intent(this, DnsttProxyService::class.java).apply {
+            action = DnsttProxyService.ACTION_DISCONNECT
         }
+        startService(serviceIntent)
+        isProxySharingEnabled.set(false)
+        result.success(true)
     }
 
     // Get local IP addresses for proxy sharing display
@@ -383,40 +352,32 @@ class MainActivity : FlutterActivity() {
         proxyPort: Int,
         result: MethodChannel.Result
     ) {
-        if (isProxyRunning.get()) {
+        if (DnsttProxyService.isRunning.get()) {
             result.success(true)
             return
         }
 
-        Log.d("DnsttProxy", "Starting shared proxy mode on port $proxyPort")
+        Log.d("DnsttProxy", "Starting shared proxy service on port $proxyPort")
         isProxySharingEnabled.set(true)
 
-        proxyScope.launch {
-            try {
-                // Use 0.0.0.0 to allow connections from other devices
-                val listenAddr = "0.0.0.0:$proxyPort"
-                proxyClient = Mobile.newClient(dnsServer, tunnelDomain, publicKey, listenAddr)
-                proxyClient?.setShareProxy(true)
-                proxyClient?.start()
-                isProxyRunning.set(true)
-
-                Log.d("DnsttProxy", "Shared proxy started on $listenAddr")
-
-                // Notify state change
-                runOnUiThread {
-                    eventSink?.success("proxy_connected")
-                    result.success(true)
-                }
-            } catch (e: Exception) {
-                Log.e("DnsttProxy", "Failed to start shared proxy: ${e.message}", e)
-                isProxyRunning.set(false)
-                isProxySharingEnabled.set(false)
-                runOnUiThread {
-                    eventSink?.success("proxy_error")
-                    result.success(false)
-                }
+        // Set up state callback
+        DnsttProxyService.stateCallback = { state ->
+            runOnUiThread {
+                eventSink?.success(state)
             }
         }
+
+        // Start the proxy service with sharing enabled
+        val serviceIntent = Intent(this, DnsttProxyService::class.java).apply {
+            action = DnsttProxyService.ACTION_CONNECT
+            putExtra(DnsttProxyService.EXTRA_DNS_SERVER, dnsServer)
+            putExtra(DnsttProxyService.EXTRA_TUNNEL_DOMAIN, tunnelDomain)
+            putExtra(DnsttProxyService.EXTRA_PUBLIC_KEY, publicKey)
+            putExtra(DnsttProxyService.EXTRA_PROXY_PORT, proxyPort)
+            putExtra(DnsttProxyService.EXTRA_SHARE_PROXY, true)
+        }
+        startForegroundService(serviceIntent)
+        result.success(true)
     }
 
     // SSH tunnel mode methods
@@ -442,9 +403,8 @@ class MainActivity : FlutterActivity() {
             try {
                 // Step 1: Start DNSTT proxy on internal port 7001 (creates tunnel to SSH server)
                 val listenAddr = "127.0.0.1:7001"
-                proxyClient = Mobile.newClient(dnsServer, tunnelDomain, publicKey, listenAddr)
-                proxyClient?.start()
-                isProxyRunning.set(true)
+                sshDnsttClient = Mobile.newClient(dnsServer, tunnelDomain, publicKey, listenAddr)
+                sshDnsttClient?.start()
                 Log.d("DnsttSsh", "DNSTT tunnel started on $listenAddr")
 
                 // Wait for DNSTT to be ready
@@ -472,9 +432,8 @@ class MainActivity : FlutterActivity() {
                     Log.e("DnsttSsh", "SSH connection failed: $error")
 
                     // Clean up DNSTT proxy
-                    proxyClient?.stop()
-                    proxyClient = null
-                    isProxyRunning.set(false)
+                    sshDnsttClient?.stop()
+                    sshDnsttClient = null
                     sshTunnelClient = null
 
                     runOnUiThread {
@@ -487,10 +446,9 @@ class MainActivity : FlutterActivity() {
 
                 // Clean up
                 try {
-                    proxyClient?.stop()
+                    sshDnsttClient?.stop()
                 } catch (_: Exception) {}
-                proxyClient = null
-                isProxyRunning.set(false)
+                sshDnsttClient = null
                 sshTunnelClient?.disconnect()
                 sshTunnelClient = null
                 isSshTunnelRunning.set(false)
@@ -525,9 +483,8 @@ class MainActivity : FlutterActivity() {
                 isSshTunnelRunning.set(false)
 
                 // Then stop DNSTT proxy
-                proxyClient?.stop()
-                proxyClient = null
-                isProxyRunning.set(false)
+                sshDnsttClient?.stop()
+                sshDnsttClient = null
 
                 Log.d("DnsttSsh", "SSH tunnel stopped")
 
@@ -538,7 +495,6 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 Log.e("DnsttSsh", "Error stopping SSH tunnel: ${e.message}", e)
                 isSshTunnelRunning.set(false)
-                isProxyRunning.set(false)
                 runOnUiThread {
                     eventSink?.success("ssh_tunnel_disconnected")
                     result.success(true)
@@ -601,9 +557,8 @@ class MainActivity : FlutterActivity() {
             try {
                 // Step 1: Start DNSTT proxy on internal port 7001
                 val listenAddr = "127.0.0.1:7001"
-                proxyClient = Mobile.newClient(dnsServer, tunnelDomain, publicKey, listenAddr)
-                proxyClient?.start()
-                isProxyRunning.set(true)
+                sshDnsttClient = Mobile.newClient(dnsServer, tunnelDomain, publicKey, listenAddr)
+                sshDnsttClient?.start()
                 Log.d("DnsttSsh", "DNSTT tunnel started on $listenAddr")
 
                 delay(500)
@@ -629,9 +584,8 @@ class MainActivity : FlutterActivity() {
                     val error = sshTunnelClient?.lastError ?: "SSH connection failed"
                     Log.e("DnsttSsh", "SSH connection failed: $error")
 
-                    proxyClient?.stop()
-                    proxyClient = null
-                    isProxyRunning.set(false)
+                    sshDnsttClient?.stop()
+                    sshDnsttClient = null
                     sshTunnelClient = null
 
                     runOnUiThread {
@@ -642,9 +596,8 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 Log.e("DnsttSsh", "Failed to start SSH tunnel with VPN: ${e.message}", e)
 
-                try { proxyClient?.stop() } catch (_: Exception) {}
-                proxyClient = null
-                isProxyRunning.set(false)
+                try { sshDnsttClient?.stop() } catch (_: Exception) {}
+                sshDnsttClient = null
                 sshTunnelClient?.disconnect()
                 sshTunnelClient = null
                 isSshTunnelRunning.set(false)
@@ -933,14 +886,18 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             Log.e("DnsttSsh", "Error stopping SSH tunnel on destroy: ${e.message}")
         }
-        // Stop proxy client if running
-        try {
-            proxyClient?.stop()
-            proxyClient = null
-            isProxyRunning.set(false)
-        } catch (e: Exception) {
-            Log.e("DnsttProxy", "Error stopping proxy on destroy: ${e.message}")
+        // Stop proxy service if running
+        if (DnsttProxyService.isRunning.get()) {
+            try {
+                val serviceIntent = Intent(this, DnsttProxyService::class.java).apply {
+                    action = DnsttProxyService.ACTION_DISCONNECT
+                }
+                startService(serviceIntent)
+            } catch (e: Exception) {
+                Log.e("DnsttProxy", "Error stopping proxy service on destroy: ${e.message}")
+            }
         }
+        DnsttProxyService.stateCallback = null
         methodChannel?.setMethodCallHandler(null)
         eventChannel?.setStreamHandler(null)
         DnsttVpnService.stateCallback = null

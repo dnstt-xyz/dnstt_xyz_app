@@ -4,10 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import java.io.FileInputStream
@@ -36,6 +38,8 @@ class DnsttVpnService : VpnService() {
         const val EXTRA_TUNNEL_DOMAIN = "tunnel_domain"
         const val EXTRA_PUBLIC_KEY = "public_key"
         const val EXTRA_SSH_MODE = "ssh_mode"
+        const val EXTRA_SOCKS_USERNAME = "socks_username"
+        const val EXTRA_SOCKS_PASSWORD = "socks_password"
 
         var isRunning = AtomicBoolean(false)
         var stateCallback: ((String) -> Unit)? = null
@@ -48,9 +52,14 @@ class DnsttVpnService : VpnService() {
     private var tunnelDomain: String = ""
     private var publicKey: String = ""
     private var isSshMode: Boolean = false
+    private var socksUsername: String? = null
+    private var socksPassword: String? = null
 
     private var runningThread: Thread? = null
     private val shouldRun = AtomicBoolean(false)
+
+    // Wake lock to prevent CPU from sleeping
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val tcpConnections = ConcurrentHashMap<String, TcpConnection>()
 
@@ -66,6 +75,8 @@ class DnsttVpnService : VpnService() {
                 tunnelDomain = intent.getStringExtra(EXTRA_TUNNEL_DOMAIN) ?: ""
                 publicKey = intent.getStringExtra(EXTRA_PUBLIC_KEY) ?: ""
                 isSshMode = intent.getBooleanExtra(EXTRA_SSH_MODE, false)
+                socksUsername = intent.getStringExtra(EXTRA_SOCKS_USERNAME)
+                socksPassword = intent.getStringExtra(EXTRA_SOCKS_PASSWORD)
                 // Run connect on background thread to avoid ANR
                 Thread { connect() }.start()
                 START_STICKY
@@ -194,6 +205,9 @@ class DnsttVpnService : VpnService() {
 
             createNotificationChannel()
             startForeground(NOTIFICATION_ID, createNotification("connecting"))
+
+            // Acquire wake lock to prevent CPU from sleeping
+            acquireWakeLock()
 
             // IMPORTANT: Establish VPN interface FIRST with app exclusion
             // This ensures dnstt client's sockets bypass the VPN
@@ -324,7 +338,9 @@ class DnsttVpnService : VpnService() {
                 proxyHost,
                 proxyPort,
                 ipHeader.destinationIp.hostAddress ?: return,
-                tcpHeader.destinationPort
+                tcpHeader.destinationPort,
+                socksUsername,
+                socksPassword
             )
 
             val tcpConnection = TcpConnection(
@@ -460,6 +476,9 @@ class DnsttVpnService : VpnService() {
             stopDnsttClient()
         }
 
+        // Release wake lock
+        releaseWakeLock()
+
         isRunning.set(false)
         isSshMode = false
         stateCallback?.invoke("disconnected")
@@ -572,6 +591,32 @@ class DnsttVpnService : VpnService() {
     private fun updateNotification(state: String) {
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(NOTIFICATION_ID, createNotification(state))
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "DnsttVpnService::WakeLock"
+            )
+        }
+        wakeLock?.let {
+            if (!it.isHeld) {
+                it.acquire()
+                Log.d(TAG, "Wake lock acquired")
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                Log.d(TAG, "Wake lock released")
+            }
+        }
+        wakeLock = null
     }
 
     override fun onRevoke() {

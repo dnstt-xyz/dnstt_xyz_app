@@ -112,10 +112,11 @@ go_src/*.dylib
 go_src/*.dll
 go_src/*.so
 go_src/*.h
+go_src/android/
 
 # Rust build artifacts
 rust_src/.android-build/
 rust_src/target/
 
-# Slipstream rust
-slipstream-rust/
+# Build artifacts
+macos/Runner/Libraries/

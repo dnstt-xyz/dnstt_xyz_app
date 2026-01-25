@@ -106,3 +106,14 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# === DNSTT Library ===
+# Copy dnstt.dll if it exists in go_src directory
+set(DNSTT_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../go_src/dnstt.dll")
+if(EXISTS "${DNSTT_DLL}")
+  install(FILES "${DNSTT_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+  message(STATUS "DNSTT library found: ${DNSTT_DLL}")
+else()
+  message(WARNING "DNSTT library not found at ${DNSTT_DLL} - run 'scripts/build_windows.sh' to build it")
+endif()

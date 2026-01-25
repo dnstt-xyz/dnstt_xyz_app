@@ -26,8 +26,10 @@ if ! command -v go &> /dev/null; then
 fi
 
 # Build the shared library
+# -trimpath removes filesystem paths from binary (privacy)
+# -ldflags="-s -w" strips debug info and symbol table (smaller size)
 echo "Building libdnstt.so..."
-CGO_ENABLED=1 go build -buildmode=c-shared -o libdnstt.so ./desktop
+CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libdnstt.so ./desktop
 
 if [ ! -f "libdnstt.so" ]; then
     echo "Error: Failed to build libdnstt.so"

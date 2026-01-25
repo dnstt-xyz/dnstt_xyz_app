@@ -103,19 +103,26 @@ gomobile init
 
 ### Build the AAR
 
+**IMPORTANT**: Build from a temp directory to avoid embedding local paths in the binary.
+
 ```bash
-# Navigate to Go source (included in project)
-cd go_src
+# Copy source to temp directory and build from there
+mkdir -p /tmp/dnstt_build
+cp -r go_src/* /tmp/dnstt_build/
+cd /tmp/dnstt_build
 
 # Build for all architectures (largest file, most compatible)
-gomobile bind -v -androidapi 21 -target=android -o dnstt.aar ./mobile
+# -trimpath removes local filesystem paths from binary
+# -ldflags="-s -w" strips debug info (smaller size)
+GOFLAGS="-trimpath" gomobile bind -ldflags="-s -w" -androidapi 21 -target=android -o dnstt.aar ./mobile
 
 # Or build for specific architectures (smaller size)
-gomobile bind -v -androidapi 21 -target=android/arm64 -o dnstt.aar ./mobile           # ARM64 only
-gomobile bind -v -androidapi 21 -target=android/arm,android/arm64 -o dnstt.aar ./mobile  # ARM + ARM64
+GOFLAGS="-trimpath" gomobile bind -ldflags="-s -w" -androidapi 21 -target=android/arm64 -o dnstt.aar ./mobile           # ARM64 only
+GOFLAGS="-trimpath" gomobile bind -ldflags="-s -w" -androidapi 21 -target=android/arm,android/arm64 -o dnstt.aar ./mobile  # ARM + ARM64
 
-# Copy to libs folder
-cp dnstt.aar ../android/app/libs/
+# Copy to project libs folder
+cp dnstt.aar /path/to/project/android/app/libs/
+cp dnstt.aar /path/to/project/go_src/  # Keep a copy in go_src
 ```
 
 ### Go Mobile Targets

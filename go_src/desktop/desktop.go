@@ -37,9 +37,11 @@ func dnstt_create_client(dnsServer *C.char, tunnelDomain *C.char, pubKeyHex *C.c
 	clientLock.Lock()
 	defer clientLock.Unlock()
 
+	// Clean up existing client if any
 	if client != nil {
-		lastError = "client already exists"
-		return -1
+		log.Printf("Stopping existing client before creating new one")
+		client.Stop()
+		client = nil
 	}
 
 	c, err := mobile.NewClient(

@@ -126,3 +126,14 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# === DNSTT Library ===
+# Copy libdnstt.so if it exists in go_src directory
+set(DNSTT_SO "${CMAKE_CURRENT_SOURCE_DIR}/../go_src/libdnstt.so")
+if(EXISTS "${DNSTT_SO}")
+  install(FILES "${DNSTT_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+  message(STATUS "DNSTT library found: ${DNSTT_SO}")
+else()
+  message(WARNING "DNSTT library not found at ${DNSTT_SO} - run 'scripts/build_linux.sh' to build it")
+endif()

@@ -1,6 +1,12 @@
 import 'package:uuid/uuid.dart';
 
-/// Tunnel type enumeration
+/// Transport type enumeration - the underlying tunnel protocol
+/// - dnstt: Original DNSTT protocol (DNS TXT + KCP + Noise)
+enum TransportType {
+  dnstt,
+}
+
+/// Tunnel type enumeration - what the server forwards to
 /// - socks5: Server configured to forward to SOCKS5 proxy (standard DNSTT)
 /// - ssh: Server configured to forward to SSH server (port 22)
 ///
@@ -20,6 +26,9 @@ class DnsttConfig {
   String publicKey;
   String tunnelDomain;
 
+  /// Transport type - the underlying tunnel protocol
+  TransportType transportType;
+
   /// Tunnel type - indicates what the server is configured for
   TunnelType tunnelType;
 
@@ -34,6 +43,7 @@ class DnsttConfig {
     required this.name,
     required this.publicKey,
     required this.tunnelDomain,
+    this.transportType = TransportType.dnstt,
     this.tunnelType = TunnelType.socks5,
     this.sshUsername,
     this.sshPassword,
@@ -45,6 +55,7 @@ class DnsttConfig {
         'name': name,
         'publicKey': publicKey,
         'tunnelDomain': tunnelDomain,
+        'transportType': transportType.name,
         'tunnelType': tunnelType.name,
         'sshUsername': sshUsername,
         'sshPassword': sshPassword,
@@ -56,11 +67,17 @@ class DnsttConfig {
         name: json['name'],
         publicKey: json['publicKey'],
         tunnelDomain: json['tunnelDomain'],
+        transportType: _parseTransportType(json['transportType']),
         tunnelType: _parseTunnelType(json['tunnelType']),
         sshUsername: json['sshUsername'],
         sshPassword: json['sshPassword'],
         sshPrivateKey: json['sshPrivateKey'],
       );
+
+  static TransportType _parseTransportType(dynamic value) {
+    // Always return dnstt (only supported transport)
+    return TransportType.dnstt;
+  }
 
   static TunnelType _parseTunnelType(dynamic value) {
     if (value == null) return TunnelType.socks5;
@@ -76,6 +93,7 @@ class DnsttConfig {
     return TunnelType.socks5;
   }
 
+  /// Basic validation
   bool get isValid =>
       publicKey.isNotEmpty &&
       tunnelDomain.isNotEmpty &&
@@ -98,6 +116,7 @@ class DnsttConfig {
     String? name,
     String? publicKey,
     String? tunnelDomain,
+    TransportType? transportType,
     TunnelType? tunnelType,
     String? sshUsername,
     String? sshPassword,
@@ -108,6 +127,7 @@ class DnsttConfig {
       name: name ?? this.name,
       publicKey: publicKey ?? this.publicKey,
       tunnelDomain: tunnelDomain ?? this.tunnelDomain,
+      transportType: transportType ?? this.transportType,
       tunnelType: tunnelType ?? this.tunnelType,
       sshUsername: sshUsername ?? this.sshUsername,
       sshPassword: sshPassword ?? this.sshPassword,

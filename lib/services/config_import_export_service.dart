@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/dnstt_config.dart';
@@ -20,8 +21,11 @@ class ConfigImportExportService {
     try {
       final response = await http.get(
         Uri.parse(url),
-        headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 30));
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'DNSTT-Client/1.0',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
         throw Exception('Failed to fetch configs: HTTP ${response.statusCode}');
@@ -54,7 +58,7 @@ class ConfigImportExportService {
       if (item is! Map<String, dynamic>) continue;
 
       try {
-        // Parse tunnel type
+        // Parse tunnel type (socks5 or ssh)
         TunnelType tunnelType = TunnelType.socks5;
         final typeStr = item['tunnelType']?.toString().toLowerCase() ??
                         item['type']?.toString().toLowerCase() ?? 'socks5';
@@ -107,20 +111,21 @@ class ConfigImportExportService {
   /// Export configs to JSON string
   static String exportConfigsToJson(List<DnsttConfig> configs) {
     final data = {
-      'version': '1.1',
+      'version': '1.2',
       'configs': configs.map((c) {
         final configMap = <String, dynamic>{
           'name': c.name,
           'publicKey': c.publicKey,
           'tunnelDomain': c.tunnelDomain,
-          'tunnelType': c.tunnelType.name,
+          'tunnelType': c.tunnelType.name,        // socks5 or ssh
         };
 
         // Include SSH settings only for SSH tunnel type
         if (c.tunnelType == TunnelType.ssh) {
           if (c.sshUsername != null) configMap['sshUsername'] = c.sshUsername;
-          // Note: For security, we don't export sshPassword or sshPrivateKey
-          // They should be entered manually after import
+          if (c.sshPassword != null) configMap['sshPassword'] = c.sshPassword;
+          // Note: For security, we don't export sshPrivateKey
+          // It should be entered manually after import
         }
 
         return configMap;
@@ -138,8 +143,11 @@ class ConfigImportExportService {
     try {
       final response = await http.get(
         Uri.parse(url),
-        headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 30));
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'DNSTT-Client/1.0',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
         throw Exception('Failed to fetch servers: HTTP ${response.statusCode}');
@@ -235,17 +243,26 @@ class ConfigImportExportService {
     try {
       final response = await http.get(
         Uri.parse(url),
-        headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 30));
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'DNSTT-Client/1.0',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode != 200) {
-        throw Exception('Failed to fetch DNS servers: HTTP ${response.statusCode}');
+        throw Exception('HTTP ${response.statusCode}');
       }
 
       final jsonData = json.decode(response.body);
       return _parseDnsServerList(jsonData);
+    } on TimeoutException {
+      throw Exception('Request timed out after 15 seconds');
+    } on http.ClientException catch (e) {
+      throw Exception('Network error: $e');
+    } on FormatException catch (e) {
+      throw Exception('Invalid JSON format: $e');
     } catch (e) {
-      throw Exception('Failed to import DNS servers: $e');
+      throw Exception('Failed to fetch: $e');
     }
   }
 
