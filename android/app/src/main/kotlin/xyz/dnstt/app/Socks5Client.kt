@@ -11,17 +11,22 @@ class Socks5Client(
     private val proxyHost: String,
     private val proxyPort: Int,
     private val targetHost: String,
-    private val targetPort: Int
+    private val targetPort: Int,
+    private val username: String? = null,
+    private val password: String? = null
 ) {
 
     companion object {
         private const val TAG = "Socks5Client"
         private const val SOCKS_VERSION = 5
         private const val AUTH_METHOD_NONE = 0
+        private const val AUTH_METHOD_USERNAME = 2
         private const val CMD_CONNECT = 1
         private const val ADDR_TYPE_IPV4 = 1
         private const val ADDR_TYPE_DOMAIN = 3
     }
+
+    private val requiresAuth: Boolean get() = !username.isNullOrEmpty() && !password.isNullOrEmpty()
 
     private var socket: Socket? = null
     private var inputStream: InputStream? = null
@@ -67,20 +72,87 @@ class Socks5Client(
 
     private fun handshake(): Boolean {
         try {
-            // Send greeting
-            val greeting = byteArrayOf(SOCKS_VERSION.toByte(), 1, AUTH_METHOD_NONE.toByte())
+            // Send greeting with supported auth methods
+            val greeting = if (requiresAuth) {
+                byteArrayOf(SOCKS_VERSION.toByte(), 2, AUTH_METHOD_NONE.toByte(), AUTH_METHOD_USERNAME.toByte())
+            } else {
+                byteArrayOf(SOCKS_VERSION.toByte(), 1, AUTH_METHOD_NONE.toByte())
+            }
             outputStream?.write(greeting)
             outputStream?.flush()
 
             // Receive response
             val response = ByteArray(2)
             val bytesRead = inputStream?.read(response) ?: -1
-            if (bytesRead != 2 || response[0] != SOCKS_VERSION.toByte() || response[1] != AUTH_METHOD_NONE.toByte()) {
+            if (bytesRead != 2 || response[0] != SOCKS_VERSION.toByte()) {
+                Log.e(TAG, "Invalid SOCKS5 greeting response")
                 return false
             }
-            return true
+
+            val selectedMethod = response[1].toInt() and 0xFF
+            Log.d(TAG, "Server selected auth method: $selectedMethod")
+
+            when (selectedMethod) {
+                AUTH_METHOD_NONE -> {
+                    // No authentication required
+                    return true
+                }
+                AUTH_METHOD_USERNAME -> {
+                    // Username/password authentication required
+                    if (!requiresAuth) {
+                        Log.e(TAG, "Server requires auth but no credentials provided")
+                        return false
+                    }
+                    return authenticateWithPassword()
+                }
+                0xFF -> {
+                    Log.e(TAG, "Server rejected all auth methods")
+                    return false
+                }
+                else -> {
+                    Log.e(TAG, "Unsupported auth method: $selectedMethod")
+                    return false
+                }
+            }
         } catch (e: IOException) {
             Log.e(TAG, "Handshake failed", e)
+            return false
+        }
+    }
+
+    private fun authenticateWithPassword(): Boolean {
+        try {
+            val usernameBytes = username!!.toByteArray()
+            val passwordBytes = password!!.toByteArray()
+
+            // Build auth request: VER(1) | ULEN(1) | UNAME(1-255) | PLEN(1) | PASSWD(1-255)
+            val authRequest = ByteArray(3 + usernameBytes.size + passwordBytes.size)
+            authRequest[0] = 0x01 // Auth sub-negotiation version
+            authRequest[1] = usernameBytes.size.toByte()
+            System.arraycopy(usernameBytes, 0, authRequest, 2, usernameBytes.size)
+            authRequest[2 + usernameBytes.size] = passwordBytes.size.toByte()
+            System.arraycopy(passwordBytes, 0, authRequest, 3 + usernameBytes.size, passwordBytes.size)
+
+            outputStream?.write(authRequest)
+            outputStream?.flush()
+
+            // Read auth response: VER(1) | STATUS(1)
+            val authResponse = ByteArray(2)
+            val bytesRead = inputStream?.read(authResponse) ?: -1
+            if (bytesRead != 2) {
+                Log.e(TAG, "Invalid auth response length")
+                return false
+            }
+
+            if (authResponse[1] != 0x00.toByte()) {
+                Log.e(TAG, "Authentication failed: status=${authResponse[1]}")
+                return false
+            }
+
+            Log.d(TAG, "SOCKS5 authentication successful")
+            return true
+        } catch (e: IOException) {
+            Log.e(TAG, "Authentication failed", e)
             return false
         }
     }

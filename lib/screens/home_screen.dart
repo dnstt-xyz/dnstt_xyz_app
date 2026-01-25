@@ -22,8 +22,6 @@ enum ConnectionMode { vpn, proxy }
 class _HomeScreenState extends State<HomeScreen> {
   final VpnService _vpnService = VpnService();
   ConnectionMode _connectionMode = ConnectionMode.vpn;
-  bool _proxySharing = false;
-  List<String> _localIpAddresses = [];
 
   @override
   void initState() {
@@ -78,9 +76,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildProxyNotice(BuildContext context, AppState state) {
     final isSshTunnel = _vpnService.isSshTunnelMode;
-    final isSharing = _vpnService.isProxySharing;
-    final proxyAddress = _vpnService.socksProxyAddress; // Always 127.0.0.1:1080
-    const proxyPort = 1080;
+    final proxyAddress = _vpnService.socksProxyAddress;
+    final proxyPort = 1080;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -165,7 +162,9 @@ class _HomeScreenState extends State<HomeScreen> {
             width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: () async {
-                final telegramUrl = Uri.parse('tg://socks?server=127.0.0.1&port=$proxyPort&user=&pass=');
+                final telegramUrl = Uri.parse(
+                  'tg://socks?server=127.0.0.1&port=$proxyPort'
+                );
                 if (await canLaunchUrl(telegramUrl)) {
                   await launchUrl(telegramUrl);
                 } else {
@@ -188,152 +187,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(6),
                 ),
-              ),
-            ),
-          ),
-
-          // Proxy Sharing Section
-          if (isSharing && _localIpAddresses.isNotEmpty) ...[
-            const SizedBox(height: 16),
-            const Divider(),
-            const SizedBox(height: 12),
-            _buildProxySharingInfo(context, proxyPort),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProxySharingInfo(BuildContext context, int proxyPort) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.blue.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.blue.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.share, size: 20, color: Colors.blue),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text(
-                  'Proxy Sharing Enabled',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.blue,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Other devices on your network can use this proxy:',
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[600],
-            ),
-          ),
-          const SizedBox(height: 8),
-          ..._localIpAddresses.map((ip) => _buildSharedAddressItem(context, ip, proxyPort)),
-          const SizedBox(height: 12),
-          Text(
-            'To use on another device:\n'
-            '1. Connect to the same WiFi network\n'
-            '2. Set SOCKS5 proxy with address and port above\n'
-            '3. For Telegram: Settings > Data > Proxy',
-            style: TextStyle(
-              fontSize: 11,
-              color: Colors.grey[600],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSharedAddressItem(BuildContext context, String ip, int port) {
-    final address = '$ip:$port';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.blue.shade200),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.wifi, size: 16, color: Colors.blue),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: SelectableText(
-                      address,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Material(
-            color: Colors.blue,
-            borderRadius: BorderRadius.circular(6),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () {
-                Clipboard.setData(ClipboardData(text: address));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Copied: $address'),
-                    duration: const Duration(seconds: 2),
-                  ),
-                );
-              },
-              child: const Padding(
-                padding: EdgeInsets.all(10),
-                child: Icon(Icons.copy, color: Colors.white, size: 18),
-              ),
-            ),
-          ),
-          const SizedBox(width: 4),
-          Material(
-            color: const Color(0xFF0088CC),
-            borderRadius: BorderRadius.circular(6),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () async {
-                final telegramUrl = Uri.parse('tg://socks?server=$ip&port=$port&user=&pass=');
-                if (await canLaunchUrl(telegramUrl)) {
-                  await launchUrl(telegramUrl);
-                } else {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Telegram is not installed'),
-                        backgroundColor: Colors.orange,
-                      ),
-                    );
-                  }
-                }
-              },
-              child: const Padding(
-                padding: EdgeInsets.all(10),
-                child: Icon(Icons.send, color: Colors.white, size: 18),
               ),
             ),
           ),
@@ -569,14 +422,7 @@ class _HomeScreenState extends State<HomeScreen> {
               _buildModeToggle(context),
             ],
 
-            // Proxy sharing toggle (shown when in proxy mode and disconnected)
-            if (isDisconnected && canConnect && (_connectionMode == ConnectionMode.proxy || VpnService.isDesktopPlatform)) ...[
-              const SizedBox(height: 12),
-              _buildProxySharingToggle(context),
-            ],
-
-            // Show SOCKS5 proxy notice when connected in proxy mode (desktop or Android proxy mode)
-            // Don't show for VPN mode (including SSH tunnel in VPN mode)
+            // Show proxy notice when connected in proxy mode (desktop or Android proxy mode)
             if (isConnected && (VpnService.isDesktopPlatform || _vpnService.isProxyMode || (_vpnService.isSshTunnelMode && _connectionMode == ConnectionMode.proxy))) ...[
               const SizedBox(height: 16),
               const Divider(),
@@ -664,60 +510,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildProxySharingToggle(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: _proxySharing ? Colors.blue.withOpacity(0.1) : Colors.grey[100],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: _proxySharing ? Colors.blue.withOpacity(0.3) : Colors.grey.withOpacity(0.3),
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            Icons.share,
-            size: 20,
-            color: _proxySharing ? Colors.blue : Colors.grey[600],
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Share Proxy on Network',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: _proxySharing ? Colors.blue[800] : Colors.grey[700],
-                  ),
-                ),
-                Text(
-                  'Allow other devices to use this proxy',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Switch(
-            value: _proxySharing,
-            onChanged: (value) {
-              setState(() {
-                _proxySharing = value;
-              });
-            },
-            activeColor: Colors.blue,
-          ),
-        ],
       ),
     );
   }
@@ -835,10 +627,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final useProxyMode = isDesktop || (Platform.isAndroid && _connectionMode == ConnectionMode.proxy);
 
     // Determine connection type for permission and messages
-    final effectiveProxyMode = useProxyMode && !isSshTunnel;
-    final connectionType = isSshTunnel
-        ? (useProxyMode ? 'SSH tunnel (proxy)' : 'SSH tunnel (VPN)')
-        : (useProxyMode ? 'SOCKS proxy' : 'VPN');
+    String connectionType;
+    if (isSshTunnel) {
+      connectionType = useProxyMode ? 'SSH tunnel (proxy)' : 'SSH tunnel (VPN)';
+    } else {
+      connectionType = useProxyMode ? 'SOCKS proxy' : 'VPN';
+    }
 
     // Validate SSH settings if SSH tunnel type
     if (isSshTunnel) {
@@ -886,6 +680,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     bool success;
+
     if (isSshTunnel && useProxyMode) {
       // SSH tunnel in proxy mode - DNSTT + SSH, no VPN
       final config = state.activeConfig!;
@@ -896,13 +691,7 @@ class _HomeScreenState extends State<HomeScreen> {
         sshUsername: config.sshUsername!,
         sshPassword: config.sshPassword,
         sshPrivateKey: config.sshPrivateKey,
-        shareProxy: _proxySharing,
       );
-      // Fetch local IP addresses for display if sharing is enabled
-      if (success && _proxySharing) {
-        _localIpAddresses = await _vpnService.getLocalIpAddresses();
-        setState(() {});
-      }
     } else if (isSshTunnel && !useProxyMode) {
       // SSH tunnel in VPN mode - DNSTT + SSH + VPN routing
       final config = state.activeConfig!;
@@ -916,27 +705,12 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     } else if (useProxyMode) {
       // Proxy-only mode (desktop or Android proxy mode)
-      if (_proxySharing) {
-        // Connect with proxy sharing enabled
-        success = await _vpnService.connectProxyShared(
-          dnsServer: state.activeDns?.address ?? '8.8.8.8',
-          tunnelDomain: state.activeConfig?.tunnelDomain,
-          publicKey: state.activeConfig?.publicKey,
-          proxyPort: 1080,
-        );
-        // Fetch local IP addresses for display
-        if (success) {
-          _localIpAddresses = await _vpnService.getLocalIpAddresses();
-          setState(() {});
-        }
-      } else {
-        success = await _vpnService.connectProxy(
-          dnsServer: state.activeDns?.address ?? '8.8.8.8',
-          tunnelDomain: state.activeConfig?.tunnelDomain,
-          publicKey: state.activeConfig?.publicKey,
-          proxyPort: 1080,
-        );
-      }
+      success = await _vpnService.connectProxy(
+        dnsServer: state.activeDns?.address ?? '8.8.8.8',
+        tunnelDomain: state.activeConfig?.tunnelDomain,
+        publicKey: state.activeConfig?.publicKey,
+        proxyPort: 1080,
+      );
     } else {
       // VPN mode (Android)
       success = await _vpnService.connect(
@@ -955,9 +729,6 @@ class _HomeScreenState extends State<HomeScreen> {
           successMessage = 'SSH tunnel (proxy) started on ${_vpnService.socksProxyAddress}';
         } else if (isSshTunnel && !useProxyMode) {
           successMessage = 'SSH tunnel (VPN) connected';
-        } else if (useProxyMode && _proxySharing) {
-          final ips = _localIpAddresses.isNotEmpty ? _localIpAddresses.first : '0.0.0.0';
-          successMessage = 'Shared proxy started - available at $ips:1080';
         } else if (useProxyMode) {
           successMessage = 'SOCKS proxy started on ${_vpnService.socksProxyAddress}';
         } else {
@@ -987,7 +758,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDesktop = VpnService.isDesktopPlatform;
     final wasProxyMode = _vpnService.isProxyMode;
     final wasSshTunnelMode = _vpnService.isSshTunnelMode;
-    final wasProxySharing = _vpnService.isProxySharing;
 
     if (wasSshTunnelMode && !isDesktop) {
       await _vpnService.disconnectSshTunnel();
@@ -997,17 +767,10 @@ class _HomeScreenState extends State<HomeScreen> {
       await _vpnService.disconnect();
     }
 
-    // Reset local state
-    setState(() {
-      _localIpAddresses = [];
-    });
-
     if (context.mounted) {
       String disconnectMessage;
       if (wasSshTunnelMode) {
         disconnectMessage = 'SSH tunnel stopped';
-      } else if (wasProxySharing) {
-        disconnectMessage = 'Shared proxy stopped';
       } else if (isDesktop || wasProxyMode) {
         disconnectMessage = 'SOCKS proxy stopped';
       } else {
@@ -1028,11 +791,6 @@ class _HomeScreenState extends State<HomeScreen> {
       await _vpnService.disconnect();
     }
     state.setConnectionStatus(ConnectionStatus.disconnected);
-
-    // Reset local state
-    setState(() {
-      _localIpAddresses = [];
-    });
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

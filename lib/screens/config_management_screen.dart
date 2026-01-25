@@ -180,11 +180,14 @@ class ConfigManagementScreen extends StatelessWidget {
                             children: [
                               _buildDetailRow('Domain', config.tunnelDomain),
                               const SizedBox(height: 8),
-                              _buildDetailRow(
-                                'Public Key',
-                                '${config.publicKey.substring(0, 16)}...',
-                              ),
-                              const SizedBox(height: 8),
+                              // Show public key
+                              if (config.publicKey.isNotEmpty) ...[
+                                _buildDetailRow(
+                                  'Public Key',
+                                  '${config.publicKey.substring(0, 16.clamp(0, config.publicKey.length))}...',
+                                ),
+                                const SizedBox(height: 8),
+                              ],
                               Row(
                                 crossAxisAlignment: CrossAxisAlignment.center,
                                 children: [
@@ -691,7 +694,7 @@ class _ConfigDialogState extends State<_ConfigDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.existingConfig == null ? 'Add DNSTT Config' : 'Edit Config'),
+      title: Text(widget.existingConfig == null ? 'Add Config' : 'Edit Config'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -702,6 +705,15 @@ class _ConfigDialogState extends State<_ConfigDialog> {
               decoration: const InputDecoration(
                 labelText: 'Config Name',
                 hintText: 'e.g., My Server',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: domainController,
+              decoration: const InputDecoration(
+                labelText: 'Tunnel Domain',
+                hintText: 'e.g., t.example.com',
                 border: OutlineInputBorder(),
               ),
             ),
@@ -718,15 +730,11 @@ class _ConfigDialogState extends State<_ConfigDialog> {
               enableSuggestions: false,
             ),
             const SizedBox(height: 16),
-            TextField(
-              controller: domainController,
-              decoration: const InputDecoration(
-                labelText: 'Tunnel Domain',
-                hintText: 'e.g., t.example.com',
-                border: OutlineInputBorder(),
-              ),
+            const Text(
+              'Tunnel Type',
+              style: TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
             Row(
               children: [
                 _buildTypeTag(
@@ -742,6 +750,7 @@ class _ConfigDialogState extends State<_ConfigDialog> {
                 ),
               ],
             ),
+            // SSH settings
             if (selectedTunnelType == TunnelType.ssh) ...[
               const SizedBox(height: 16),
               const Text(
@@ -767,11 +776,7 @@ class _ConfigDialogState extends State<_ConfigDialog> {
                   border: const OutlineInputBorder(),
                   suffixIcon: IconButton(
                     icon: Icon(showPassword ? Icons.visibility_off : Icons.visibility),
-                    onPressed: () {
-                      setState(() {
-                        showPassword = !showPassword;
-                      });
-                    },
+                    onPressed: () => setState(() => showPassword = !showPassword),
                   ),
                 ),
                 obscureText: !showPassword,
@@ -799,13 +804,15 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     required String label,
     required bool isSelected,
     required VoidCallback onTap,
+    Color? color,
   }) {
+    final activeColor = color ?? Theme.of(context).primaryColor;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: isSelected ? Theme.of(context).primaryColor : Colors.grey[200],
+          color: isSelected ? activeColor : Colors.grey[200],
           borderRadius: BorderRadius.circular(20),
         ),
         child: Text(
@@ -824,13 +831,21 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     final publicKey = publicKeyController.text.trim();
     final domain = domainController.text.trim();
 
-    if (name.isEmpty || publicKey.isEmpty || domain.isEmpty) {
+    // Basic validation
+    if (name.isEmpty || domain.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all required fields')),
+        const SnackBar(content: Text('Please fill name and domain')),
       );
       return;
     }
 
+    // Public key validation
+    if (publicKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Public key is required')),
+      );
+      return;
+    }
     if (publicKey.length != 64) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Public key must be 64 hex characters')),
@@ -866,16 +881,24 @@ class _ConfigDialogState extends State<_ConfigDialog> {
         publicKey: publicKey,
         tunnelDomain: domain,
         tunnelType: selectedTunnelType,
-        sshUsername: selectedTunnelType == TunnelType.ssh ? sshUsernameController.text.trim() : null,
-        sshPassword: selectedTunnelType == TunnelType.ssh ? sshPasswordController.text : null,
+        sshUsername: selectedTunnelType == TunnelType.ssh
+            ? sshUsernameController.text.trim()
+            : null,
+        sshPassword: selectedTunnelType == TunnelType.ssh
+            ? sshPasswordController.text
+            : null,
       ));
     } else {
       widget.existingConfig!.name = name;
       widget.existingConfig!.publicKey = publicKey;
       widget.existingConfig!.tunnelDomain = domain;
       widget.existingConfig!.tunnelType = selectedTunnelType;
-      widget.existingConfig!.sshUsername = selectedTunnelType == TunnelType.ssh ? sshUsernameController.text.trim() : null;
-      widget.existingConfig!.sshPassword = selectedTunnelType == TunnelType.ssh ? sshPasswordController.text : null;
+      widget.existingConfig!.sshUsername = selectedTunnelType == TunnelType.ssh
+          ? sshUsernameController.text.trim()
+          : null;
+      widget.existingConfig!.sshPassword = selectedTunnelType == TunnelType.ssh
+          ? sshPasswordController.text
+          : null;
       state.updateDnsttConfig(widget.existingConfig!);
     }
 

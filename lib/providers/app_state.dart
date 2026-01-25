@@ -261,40 +261,52 @@ class AppState extends ChangeNotifier {
     final publicKey = _activeConfig?.publicKey;
 
     try {
-      await DnsttService.testMultipleDnsServersAll(
-        servers,
-        tunnelDomain: tunnelDomain,
-        publicKey: publicKey,
-        testUrl: _testUrl,
-        concurrency: 3,
-        timeout: const Duration(seconds: 15),
-        shouldCancel: () => _cancelTestingRequested,
-        onResult: (result) async {
-          // Skip cancelled results from progress (but still count as tested)
-          if (result.message == 'Cancelled') {
-            _testingProgress++;
-            notifyListeners();
-            return;
-          }
-
-          // Update progress
+      // Check if testing is supported
+      if (!isTestingSupported) {
+        // Mark all as failed with unsupported message
+        for (final server in servers) {
           _testingProgress++;
-
-          if (result.result == TestResult.success) {
-            _testingWorking++;
-          } else {
-            _testingFailed++;
-          }
-
-          // Update server status and save to storage
+          _testingFailed++;
           await updateDnsServerStatus(
-            result.server.id,
-            result.result == TestResult.success,
-            latencyMs: result.latency?.inMilliseconds,
-            message: result.message,
+            server.id,
+            false,
+            message: testingUnsupportedMessage,
           );
-        },
-      );
+        }
+      } else {
+        // For DNSTT SOCKS5: use the batch testing method
+        await DnsttService.testMultipleDnsServersAll(
+          servers,
+          tunnelDomain: tunnelDomain,
+          publicKey: publicKey,
+          testUrl: _testUrl,
+          concurrency: 3,
+          timeout: const Duration(seconds: 15),
+          shouldCancel: () => _cancelTestingRequested,
+          onResult: (result) async {
+            if (result.message == 'Cancelled') {
+              _testingProgress++;
+              notifyListeners();
+              return;
+            }
+
+            _testingProgress++;
+
+            if (result.result == TestResult.success) {
+              _testingWorking++;
+            } else {
+              _testingFailed++;
+            }
+
+            await updateDnsServerStatus(
+              result.server.id,
+              result.result == TestResult.success,
+              latencyMs: result.latency?.inMilliseconds,
+              message: result.message,
+            );
+          },
+        );
+      }
     } finally {
       _isTestingAll = false;
       _cancelTestingRequested = false;
@@ -343,9 +355,35 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Check if testing is supported for the current config
+  bool get isTestingSupported {
+    if (_activeConfig == null) return true; // No config, basic DNS test
+    // SSH tunnel testing not supported yet
+    if (_activeConfig!.tunnelType == TunnelType.ssh) return false;
+    return true;
+  }
+
+  /// Get message for unsupported testing
+  String get testingUnsupportedMessage {
+    if (_activeConfig?.tunnelType == TunnelType.ssh) {
+      return 'Testing not available for SSH tunnel configs yet';
+    }
+    return '';
+  }
+
   /// Test a single DNS server
   Future<void> testSingleDnsServer(DnsServer server) async {
     if (_testingDns[server.id] == true) return; // Already testing this server
+
+    // Check if testing is supported for current config
+    if (!isTestingSupported) {
+      await updateDnsServerStatus(
+        server.id,
+        false,
+        message: testingUnsupportedMessage,
+      );
+      return;
+    }
 
     _testingDns[server.id] = true;
     notifyListeners();
@@ -353,6 +391,8 @@ class AppState extends ChangeNotifier {
     try {
       final tunnelDomain = _activeConfig?.tunnelDomain;
       final publicKey = _activeConfig?.publicKey;
+
+      // For DNSTT SOCKS5: full tunnel test with publicKey
       final result = await DnsttService.testDnsServer(
         server,
         tunnelDomain: tunnelDomain,

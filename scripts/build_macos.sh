@@ -26,8 +26,10 @@ if ! command -v go &> /dev/null; then
 fi
 
 # Build the dylib
+# -trimpath removes filesystem paths from binary (privacy)
+# -ldflags="-s -w" strips debug info and symbol table (smaller size)
 echo "Building libdnstt.dylib..."
-CGO_ENABLED=1 go build -buildmode=c-shared -o libdnstt.dylib ./desktop
+CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libdnstt.dylib ./desktop
 
 if [ ! -f "libdnstt.dylib" ]; then
     echo "Error: Failed to build libdnstt.dylib"
@@ -79,10 +81,19 @@ codesign --force --sign - "$FRAMEWORKS_DIR/libdnstt.dylib"
 
 echo "Dylib packaged successfully"
 
-# Step 4: Verify the build
+# Step 4: Re-sign the entire app bundle
+echo ""
+echo "=== Step 4: Re-signing app bundle ==="
+codesign --force --deep --sign - "$APP_PATH"
+echo "App bundle signed"
+
+# Step 5: Verify the build
 echo ""
 echo "=== Build Complete ==="
 echo "App location: $APP_PATH"
+echo ""
+echo "Contents:"
+ls -la "$FRAMEWORKS_DIR/" 2>/dev/null || echo "  (no Frameworks)"
 echo ""
 echo "To run the app:"
 echo "  open \"$APP_PATH\""
