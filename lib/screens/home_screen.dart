@@ -8,6 +8,7 @@ import '../services/vpn_service.dart';
 import '../models/dnstt_config.dart';
 import 'dns_management_screen.dart';
 import 'config_management_screen.dart';
+import 'slipstream_config_screen.dart';
 import 'donate_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -17,7 +18,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-enum ConnectionMode { vpn, proxy }
+enum ConnectionMode { vpn, proxy, slipstream }
 
 class _HomeScreenState extends State<HomeScreen> {
   final VpnService _vpnService = VpnService();
@@ -76,28 +77,42 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildProxyNotice(BuildContext context, AppState state) {
     final isSshTunnel = _vpnService.isSshTunnelMode;
-    final proxyAddress = _vpnService.socksProxyAddress;
-    final proxyPort = state.proxyPort;
+    final isSlipstream = _vpnService.isSlipstreamMode;
+    final proxyAddress = isSlipstream ? '127.0.0.1:7000' : _vpnService.socksProxyAddress;
+    final proxyPort = isSlipstream ? 7000 : state.proxyPort;
+
+    String titleText;
+    Color accentColor;
+    if (isSlipstream) {
+      titleText = 'Slipstream Tunnel Active';
+      accentColor = Colors.orange;
+    } else if (isSshTunnel) {
+      titleText = 'SSH Tunnel Active';
+      accentColor = Colors.green;
+    } else {
+      titleText = 'SOCKS5 Proxy Active';
+      accentColor = Colors.green;
+    }
 
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.green.withOpacity(0.1),
+        color: accentColor.withOpacity(0.1),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.green.withOpacity(0.3)),
+        border: Border.all(color: accentColor.withOpacity(0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.check_circle, size: 20, color: Colors.green),
+              Icon(Icons.check_circle, size: 20, color: accentColor),
               const SizedBox(width: 8),
               Text(
-                isSshTunnel ? 'SSH Tunnel Active' : 'SOCKS5 Proxy Active',
-                style: const TextStyle(
+                titleText,
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: Colors.green,
+                  color: accentColor,
                   fontSize: 14,
                 ),
               ),
@@ -120,7 +135,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.green.shade200),
+                    border: Border.all(color: accentColor.withOpacity(0.4)),
                   ),
                   child: SelectableText(
                     proxyAddress,
@@ -201,6 +216,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDisconnected = state.connectionStatus == ConnectionStatus.disconnected;
     final isError = state.connectionStatus == ConnectionStatus.error;
     final canConnect = state.activeConfig != null && state.activeDns != null;
+    // Slipstream needs its own config; resolver is optional (uses activeDns if not set in config)
+    final canConnectSlipstream = state.activeSlipstreamConfig != null &&
+        (state.activeSlipstreamConfig!.resolver != null || state.activeDns != null);
 
     final statusColor = switch (state.connectionStatus) {
       ConnectionStatus.connected => Colors.green,
@@ -225,11 +243,13 @@ class _HomeScreenState extends State<HomeScreen> {
             // Large toggle button
             GestureDetector(
               onTap: () {
+                // Allow connection if full config available OR slipstream mode with just DNS
+                final canTapConnect = canConnect || (_connectionMode == ConnectionMode.slipstream && canConnectSlipstream);
                 if (isConnecting) {
                   _cancelConnection(context, state);
                 } else if (isConnected) {
                   _disconnect(context, state);
-                } else if (canConnect && (isDisconnected || isError)) {
+                } else if (canTapConnect && (isDisconnected || isError)) {
                   _connect(context, state);
                 }
               },
@@ -244,7 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? Colors.orange
                           : isError
                               ? Colors.red[700]
-                              : (canConnect ? Colors.grey[700] : Colors.grey[400]),
+                              : ((canConnect || (_connectionMode == ConnectionMode.slipstream && canConnectSlipstream)) ? Colors.grey[700] : Colors.grey[400]),
                   boxShadow: [
                     BoxShadow(
                       color: (isConnected ? Colors.green : isConnecting ? Colors.orange : Colors.grey).withOpacity(0.3),
@@ -263,7 +283,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       : Icon(
                           isError ? Icons.refresh : Icons.power_settings_new,
                           size: 60,
-                          color: isConnected || canConnect || isError
+                          color: isConnected || canConnect || isError || (_connectionMode == ConnectionMode.slipstream && canConnectSlipstream)
                               ? Colors.white
                               : Colors.grey[300],
                         ),
@@ -325,8 +345,48 @@ class _HomeScreenState extends State<HomeScreen> {
             const Divider(),
             const SizedBox(height: 12),
 
-            // Config info
-            if (state.activeConfig != null) ...[
+            // Config info - show DNSTT config or Slipstream config based on mode
+            if (_connectionMode == ConnectionMode.slipstream && state.activeSlipstreamConfig != null) ...[
+              _buildInfoItem(
+                context,
+                Icons.bolt,
+                'Config',
+                state.activeSlipstreamConfig!.name,
+              ),
+              const SizedBox(height: 8),
+              _buildInfoItem(
+                context,
+                Icons.language,
+                'Domain',
+                state.activeSlipstreamConfig!.tunnelDomain,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(Icons.bolt, size: 20, color: Colors.orange[600]),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Type: ',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.orange[100],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      'Slipstream',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange[700],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ] else if (_connectionMode != ConnectionMode.slipstream && state.activeConfig != null) ...[
               _buildInfoItem(
                 context,
                 Icons.settings,
@@ -376,14 +436,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-            ] else
+            ] else ...[
               _buildInfoItem(
                 context,
-                Icons.settings,
+                _connectionMode == ConnectionMode.slipstream ? Icons.bolt : Icons.settings,
                 'Config',
-                'No config selected',
+                _connectionMode == ConnectionMode.slipstream ? 'No Slipstream config' : 'No config selected',
                 isPlaceholder: true,
               ),
+            ],
 
             const SizedBox(height: 8),
 
@@ -404,7 +465,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 isPlaceholder: true,
               ),
 
-            if (!canConnect && isDisconnected) ...[
+            // Show help message when no valid config is selected for the current mode
+            if (isDisconnected && !canConnect && !canConnectSlipstream) ...[
               const SizedBox(height: 16),
               Text(
                 'Select a config and DNS server to connect',
@@ -414,16 +476,37 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 textAlign: TextAlign.center,
               ),
-            ],
-
-            // Mode toggle for Android (VPN or Proxy)
-            if (Platform.isAndroid && isDisconnected && canConnect) ...[
+            ] else if (isDisconnected && _connectionMode == ConnectionMode.slipstream && !canConnectSlipstream) ...[
               const SizedBox(height: 16),
-              _buildModeToggle(context),
+              Text(
+                'Select a Slipstream config to connect',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ] else if (isDisconnected && _connectionMode != ConnectionMode.slipstream && !canConnect) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Select a DNSTT config and DNS server to connect',
+                style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+              ),
             ],
 
-            // Show proxy notice when connected in proxy mode (desktop or Android proxy mode)
-            if (isConnected && (VpnService.isDesktopPlatform || _vpnService.isProxyMode || (_vpnService.isSshTunnelMode && _connectionMode == ConnectionMode.proxy))) ...[
+            // Mode toggle for Android (VPN, Proxy, or Slipstream)
+            // Show when either DNSTT config (for VPN/Proxy) or Slipstream config is available
+            if (Platform.isAndroid && isDisconnected && (canConnect || canConnectSlipstream)) ...[
+              const SizedBox(height: 16),
+              _buildModeToggle(context, canConnect: canConnect, canConnectSlipstream: canConnectSlipstream),
+            ],
+
+            // Show proxy notice when connected in proxy mode (desktop, Android proxy mode, or slipstream)
+            if (isConnected && (VpnService.isDesktopPlatform || _vpnService.isProxyMode || _vpnService.isSlipstreamMode || (_vpnService.isSshTunnelMode && _connectionMode == ConnectionMode.proxy))) ...[
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 12),
@@ -435,7 +518,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildModeToggle(BuildContext context) {
+  Widget _buildModeToggle(BuildContext context, {required bool canConnect, required bool canConnectSlipstream}) {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
@@ -448,17 +531,29 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildModeButton(
             context,
             icon: Icons.vpn_key,
-            label: 'VPN Mode',
+            label: 'VPN',
             isSelected: _connectionMode == ConnectionMode.vpn,
-            onTap: () => setState(() => _connectionMode = ConnectionMode.vpn),
+            isEnabled: canConnect,
+            onTap: canConnect ? () => setState(() => _connectionMode = ConnectionMode.vpn) : null,
           ),
           const SizedBox(width: 4),
           _buildModeButton(
             context,
             icon: Icons.lan,
-            label: 'Proxy Mode',
+            label: 'Proxy',
             isSelected: _connectionMode == ConnectionMode.proxy,
-            onTap: () => setState(() => _connectionMode = ConnectionMode.proxy),
+            isEnabled: canConnect,
+            onTap: canConnect ? () => setState(() => _connectionMode = ConnectionMode.proxy) : null,
+          ),
+          const SizedBox(width: 4),
+          _buildModeButton(
+            context,
+            icon: Icons.bolt,
+            label: 'Slipstream',
+            isSelected: _connectionMode == ConnectionMode.slipstream,
+            isEnabled: canConnectSlipstream,
+            onTap: canConnectSlipstream ? () => setState(() => _connectionMode = ConnectionMode.slipstream) : null,
+            color: Colors.orange,
           ),
         ],
       ),
@@ -470,16 +565,22 @@ class _HomeScreenState extends State<HomeScreen> {
     required IconData icon,
     required String label,
     required bool isSelected,
-    required VoidCallback onTap,
+    required bool isEnabled,
+    VoidCallback? onTap,
+    Color? color,
   }) {
+    final activeColor = color ?? Colors.blue;
+    final effectiveEnabled = isEnabled && onTap != null;
     return Expanded(
       child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          decoration: BoxDecoration(
-            color: isSelected ? Colors.white : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+        onTap: effectiveEnabled ? onTap : null,
+        child: Opacity(
+          opacity: effectiveEnabled ? 1.0 : 0.4,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+            decoration: BoxDecoration(
+              color: isSelected && effectiveEnabled ? Colors.white : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
             boxShadow: isSelected
                 ? [
                     BoxShadow(
@@ -495,20 +596,21 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Icon(
                 icon,
-                size: 18,
-                color: isSelected ? Colors.blue : Colors.grey[600],
+                size: 16,
+                color: isSelected ? activeColor : Colors.grey[600],
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 4),
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: 13,
+                  fontSize: 11,
                   fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  color: isSelected ? Colors.blue : Colors.grey[600],
+                  color: isSelected ? activeColor : Colors.grey[600],
                 ),
               ),
             ],
           ),
+        ),
         ),
       ),
     );
@@ -559,6 +661,18 @@ class _HomeScreenState extends State<HomeScreen> {
             context,
             MaterialPageRoute(builder: (_) => const ConfigManagementScreen()),
           ),
+        ),
+        const SizedBox(height: 12),
+        _buildMenuCard(
+          context,
+          icon: Icons.bolt,
+          title: 'Slipstream Configs',
+          subtitle: '${state.slipstreamConfigs.length} configurations',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const SlipstreamConfigScreen()),
+          ),
+          color: Colors.orange,
         ),
         const SizedBox(height: 12),
         _buildMenuCard(
@@ -705,10 +819,13 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDesktop = VpnService.isDesktopPlatform;
     final isSshTunnel = state.activeConfig?.tunnelType == TunnelType.ssh;
     final useProxyMode = isDesktop || (Platform.isAndroid && _connectionMode == ConnectionMode.proxy);
+    final useSlipstreamMode = Platform.isAndroid && _connectionMode == ConnectionMode.slipstream;
 
     // Determine connection type for permission and messages
     String connectionType;
-    if (isSshTunnel) {
+    if (useSlipstreamMode) {
+      connectionType = 'Slipstream (QUIC-over-DNS)';
+    } else if (isSshTunnel) {
       connectionType = useProxyMode ? 'SSH tunnel (proxy)' : 'SSH tunnel (VPN)';
     } else {
       connectionType = useProxyMode ? 'SOCKS proxy' : 'VPN';
@@ -742,8 +859,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // Request VPN permission first (no-op on desktop and proxy mode)
-    final needsVpnPermission = !isDesktop && !useProxyMode;
+    // Request VPN permission first (no-op on desktop, proxy mode, and slipstream mode)
+    final needsVpnPermission = !isDesktop && !useProxyMode && !useSlipstreamMode;
     if (needsVpnPermission) {
       final permissionGranted = await _vpnService.requestPermission();
       if (!permissionGranted) {
@@ -764,7 +881,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
     bool success;
 
-    if (isSshTunnel && useProxyMode) {
+    if (useSlipstreamMode) {
+      // Slipstream mode (QUIC-over-DNS tunnel)
+      final slipstreamConfig = state.activeSlipstreamConfig;
+      if (slipstreamConfig == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please select a Slipstream config first.'),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
+      // Use resolver from config, or fall back to selected DNS server
+      final resolver = slipstreamConfig.resolver ?? state.activeDns?.address ?? '8.8.8.8';
+      success = await _vpnService.connectSlipstream(
+        dnsServer: resolver,
+        tunnelDomain: slipstreamConfig.tunnelDomain,
+        proxyPort: 7000,
+        authoritative: slipstreamConfig.authoritative,
+      );
+    } else if (isSshTunnel && useProxyMode) {
       // SSH tunnel in proxy mode - DNSTT + SSH, no VPN
       final config = state.activeConfig!;
       success = await _vpnService.connectSshTunnel(
@@ -808,7 +948,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (context.mounted) {
       if (success) {
         String successMessage;
-        if (isSshTunnel && useProxyMode) {
+        if (useSlipstreamMode) {
+          successMessage = 'Slipstream tunnel started on 127.0.0.1:7000';
+        } else if (isSshTunnel && useProxyMode) {
           successMessage = 'SSH tunnel (proxy) started on ${_vpnService.socksProxyAddress}';
         } else if (isSshTunnel && !useProxyMode) {
           successMessage = 'SSH tunnel (VPN) connected';
@@ -841,8 +983,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDesktop = VpnService.isDesktopPlatform;
     final wasProxyMode = _vpnService.isProxyMode;
     final wasSshTunnelMode = _vpnService.isSshTunnelMode;
+    final wasSlipstreamMode = _vpnService.isSlipstreamMode;
 
-    if (wasSshTunnelMode && !isDesktop) {
+    if (wasSlipstreamMode && !isDesktop) {
+      await _vpnService.disconnectSlipstream();
+    } else if (wasSshTunnelMode && !isDesktop) {
       await _vpnService.disconnectSshTunnel();
     } else if (wasProxyMode && !isDesktop) {
       await _vpnService.disconnectProxy();
@@ -852,7 +997,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (context.mounted) {
       String disconnectMessage;
-      if (wasSshTunnelMode) {
+      if (wasSlipstreamMode) {
+        disconnectMessage = 'Slipstream tunnel stopped';
+      } else if (wasSshTunnelMode) {
         disconnectMessage = 'SSH tunnel stopped';
       } else if (isDesktop || wasProxyMode) {
         disconnectMessage = 'SOCKS proxy stopped';
@@ -866,7 +1013,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _cancelConnection(BuildContext context, AppState state) async {
-    if (_vpnService.isSshTunnelMode && !VpnService.isDesktopPlatform) {
+    if (_vpnService.isSlipstreamMode && !VpnService.isDesktopPlatform) {
+      await _vpnService.disconnectSlipstream();
+    } else if (_vpnService.isSshTunnelMode && !VpnService.isDesktopPlatform) {
       await _vpnService.disconnectSshTunnel();
     } else if (_vpnService.isProxyMode && !VpnService.isDesktopPlatform) {
       await _vpnService.disconnectProxy();

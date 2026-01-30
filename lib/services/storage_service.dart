@@ -2,11 +2,14 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/dns_server.dart';
 import '../models/dnstt_config.dart';
+import '../models/slipstream_config.dart';
 
 class StorageService {
   static const String _dnsServersKey = 'dns_servers';
   static const String _dnsttConfigsKey = 'dnstt_configs';
+  static const String _slipstreamConfigsKey = 'slipstream_configs';
   static const String _activeConfigKey = 'active_config';
+  static const String _activeSlipstreamConfigKey = 'active_slipstream_config';
   static const String _activeDnsKey = 'active_dns';
   static const String _testUrlKey = 'test_url';
   static const String _proxyPortKey = 'proxy_port';
@@ -132,5 +135,52 @@ class StorageService {
 
   Future<void> setProxyPort(int port) async {
     await _prefs.setInt(_proxyPortKey, port);
+  }
+
+  // Slipstream Configs
+  Future<List<SlipstreamConfig>> getSlipstreamConfigs() async {
+    final jsonStr = _prefs.getString(_slipstreamConfigsKey);
+    if (jsonStr == null) return [];
+    final List<dynamic> jsonList = json.decode(jsonStr);
+    return jsonList.map((j) => SlipstreamConfig.fromJson(j)).toList();
+  }
+
+  Future<void> saveSlipstreamConfigs(List<SlipstreamConfig> configs) async {
+    final jsonStr = json.encode(configs.map((c) => c.toJson()).toList());
+    await _prefs.setString(_slipstreamConfigsKey, jsonStr);
+  }
+
+  Future<void> addSlipstreamConfig(SlipstreamConfig config) async {
+    final configs = await getSlipstreamConfigs();
+    configs.add(config);
+    await saveSlipstreamConfigs(configs);
+  }
+
+  Future<void> removeSlipstreamConfig(String id) async {
+    final configs = await getSlipstreamConfigs();
+    configs.removeWhere((c) => c.id == id);
+    await saveSlipstreamConfigs(configs);
+  }
+
+  Future<void> updateSlipstreamConfig(SlipstreamConfig config) async {
+    final configs = await getSlipstreamConfigs();
+    final index = configs.indexWhere((c) => c.id == config.id);
+    if (index != -1) {
+      configs[index] = config;
+      await saveSlipstreamConfigs(configs);
+    }
+  }
+
+  // Active Slipstream Config
+  Future<String?> getActiveSlipstreamConfigId() async {
+    return _prefs.getString(_activeSlipstreamConfigKey);
+  }
+
+  Future<void> setActiveSlipstreamConfigId(String? id) async {
+    if (id == null) {
+      await _prefs.remove(_activeSlipstreamConfigKey);
+    } else {
+      await _prefs.setString(_activeSlipstreamConfigKey, id);
+    }
   }
 }

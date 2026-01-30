@@ -16,6 +16,12 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -56,6 +62,10 @@ android {
                 "META-INF/NOTICE.txt",
                 "META-INF/notice.txt"
             )
+        }
+        // Force extraction of native libraries so we can execute slipstream binary
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }

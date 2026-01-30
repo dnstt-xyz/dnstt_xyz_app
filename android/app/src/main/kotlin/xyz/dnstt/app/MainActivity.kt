@@ -164,6 +164,19 @@ class MainActivity : FlutterActivity() {
                 "isProxySharingEnabled" -> {
                     result.success(isProxySharingEnabled.get())
                 }
+                "connectSlipstream" -> {
+                    val dnsServer = call.argument<String>("dnsServer") ?: "8.8.8.8"
+                    val tunnelDomain = call.argument<String>("tunnelDomain") ?: ""
+                    val proxyPort = call.argument<Int>("proxyPort") ?: 7000
+                    val authoritative = call.argument<Boolean>("authoritative") ?: false
+                    connectSlipstream(dnsServer, tunnelDomain, proxyPort, authoritative, result)
+                }
+                "disconnectSlipstream" -> {
+                    disconnectSlipstream(result)
+                }
+                "isSlipstreamConnected" -> {
+                    result.success(SlipstreamProxyService.isRunning.get())
+                }
                 "connectProxyShared" -> {
                     val dnsServer = call.argument<String>("dnsServer") ?: "8.8.8.8"
                     val tunnelDomain = call.argument<String>("tunnelDomain") ?: ""
@@ -377,6 +390,50 @@ class MainActivity : FlutterActivity() {
             putExtra(DnsttProxyService.EXTRA_SHARE_PROXY, true)
         }
         startForegroundService(serviceIntent)
+        result.success(true)
+    }
+
+    // Slipstream proxy mode (QUIC-over-DNS tunnel)
+    private fun connectSlipstream(
+        dnsServer: String,
+        tunnelDomain: String,
+        proxyPort: Int,
+        authoritative: Boolean,
+        result: MethodChannel.Result
+    ) {
+        if (SlipstreamProxyService.isRunning.get()) {
+            result.success(true)
+            return
+        }
+
+        Log.d("Slipstream", "Starting Slipstream proxy on port $proxyPort")
+
+        // Set up state callback to receive events from service
+        SlipstreamProxyService.stateCallback = { state ->
+            runOnUiThread {
+                eventSink?.success(state)
+            }
+        }
+
+        // Start the Slipstream service
+        val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
+            action = SlipstreamProxyService.ACTION_CONNECT
+            putExtra(SlipstreamProxyService.EXTRA_DNS_SERVER, dnsServer)
+            putExtra(SlipstreamProxyService.EXTRA_TUNNEL_DOMAIN, tunnelDomain)
+            putExtra(SlipstreamProxyService.EXTRA_PROXY_PORT, proxyPort)
+            putExtra(SlipstreamProxyService.EXTRA_AUTHORITATIVE, authoritative)
+        }
+        startForegroundService(serviceIntent)
+        result.success(true)
+    }
+
+    private fun disconnectSlipstream(result: MethodChannel.Result) {
+        Log.d("Slipstream", "Stopping Slipstream service")
+
+        val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
+            action = SlipstreamProxyService.ACTION_DISCONNECT
+        }
+        startService(serviceIntent)
         result.success(true)
     }
 
@@ -898,6 +955,18 @@ class MainActivity : FlutterActivity() {
             }
         }
         DnsttProxyService.stateCallback = null
+        // Stop Slipstream service if running
+        if (SlipstreamProxyService.isRunning.get()) {
+            try {
+                val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
+                    action = SlipstreamProxyService.ACTION_DISCONNECT
+                }
+                startService(serviceIntent)
+            } catch (e: Exception) {
+                Log.e("Slipstream", "Error stopping Slipstream service on destroy: ${e.message}")
+            }
+        }
+        SlipstreamProxyService.stateCallback = null
         methodChannel?.setMethodCallHandler(null)
         eventChannel?.setStreamHandler(null)
         DnsttVpnService.stateCallback = null
