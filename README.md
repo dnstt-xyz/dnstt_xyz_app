@@ -10,8 +10,9 @@ A cross-platform app that tunnels traffic through DNS using the [dnstt protocol]
 - Simple one-tap connection
 - Multiple DNS server support
 - DNSTT configuration management
+- **Slipstream support**: Alternative QUIC-over-DNS tunnel (Android)
 - Material Design UI
-- **Android**: Full device VPN tunneling
+- **Android**: Full device VPN tunneling or proxy mode
 - **Desktop** (macOS, Windows, Linux): SOCKS5 proxy mode
 
 ## How It Works
@@ -91,6 +92,26 @@ flutter pub get
 flutter build apk --release --split-per-abi
 ```
 
+### Building Slipstream (Optional)
+
+Slipstream provides an alternative QUIC-over-DNS tunnel. To build with Slipstream support:
+
+```bash
+# Initialize submodule
+git submodule update --init --recursive
+
+# Apply the cross-compilation patch
+cd slipstream-plugin-android/app/src/main/rust/slipstream-rust
+git apply ../../../../../picoquic.crosscompile.diff
+
+# Build slipstream (requires Rust and Android NDK)
+cd ../../../..  # back to slipstream-plugin-android/app
+./gradlew assembleDebug
+
+# Copy binaries to dnstt_xyz_app
+cp -r build/rustJniLibs/android/* ../../android/app/src/main/jniLibs/
+```
+
 ### Build Desktop
 
 ```bash
@@ -122,17 +143,19 @@ CGO_ENABLED=1 go build -buildmode=c-shared -o libdnstt.dylib ./desktop
 
 ```
 dnstt_xyz_app/
-├── android/          # Android native code (Kotlin)
-├── go_src/           # Go dnstt library source
-├── lib/              # Flutter/Dart code
-│   ├── screens/      # UI screens
-│   ├── providers/    # State management
-│   ├── services/     # VPN and storage services
-│   └── models/       # Data models
-├── macos/            # macOS platform
-├── windows/          # Windows platform
-├── linux/            # Linux platform
-└── scripts/          # Build scripts
+├── android/                      # Android native code (Kotlin)
+├── go_src/                       # Go dnstt library source
+├── lib/                          # Flutter/Dart code
+│   ├── screens/                  # UI screens
+│   ├── providers/                # State management
+│   ├── services/                 # VPN and storage services
+│   └── models/                   # Data models
+├── slipstream-plugin-android/    # Slipstream submodule (QUIC-over-DNS)
+├── picoquic.crosscompile.diff    # Patch for building Slipstream
+├── macos/                        # macOS platform
+├── windows/                      # Windows platform
+├── linux/                        # Linux platform
+└── scripts/                      # Build scripts
 ```
 
 ## Configuration

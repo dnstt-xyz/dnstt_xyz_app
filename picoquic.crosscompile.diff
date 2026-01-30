@@ -1,0 +1,37 @@
+diff --git a/crates/slipstream-ffi/build/picoquic.rs b/crates/slipstream-ffi/build/picoquic.rs
+index 8af5ab1..bd4842e 100644
+--- a/crates/slipstream-ffi/build/picoquic.rs
++++ b/crates/slipstream-ffi/build/picoquic.rs
+@@ -46,6 +46,17 @@ pub(crate) fn build_picoquic(
+     }
+     if let Some(root) = &openssl_paths.root {
+         command.env("OPENSSL_ROOT_DIR", root);
++        // For Android cross-compilation, CMake's FindOpenSSL can't find libs
++        // even with OPENSSL_ROOT_DIR set, so we need to explicitly provide paths
++        let lib_dir = root.join("lib");
++        let crypto_lib = lib_dir.join("libcrypto.a");
++        let ssl_lib = lib_dir.join("libssl.a");
++        if crypto_lib.exists() {
++            command.env("OPENSSL_CRYPTO_LIBRARY", &crypto_lib);
++        }
++        if ssl_lib.exists() {
++            command.env("OPENSSL_SSL_LIBRARY", &ssl_lib);
++        }
+     }
+     let prefer_static_openssl = cfg!(feature = "openssl-static");
+     let openssl_no_vendor = env::var_os("OPENSSL_NO_VENDOR").is_some();
+diff --git a/scripts/build_picoquic.sh b/scripts/build_picoquic.sh
+index 647f7b8..30ba769 100755
+--- a/scripts/build_picoquic.sh
++++ b/scripts/build_picoquic.sh
+@@ -56,6 +56,10 @@ if [[ -n "${ANDROID_REQUESTED}" ]]; then
+   CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}")
+   CMAKE_ARGS+=("-DPTLS_WITH_FUSION=OFF")
+   CMAKE_ARGS+=("-DWITH_FUSION=OFF")
++  # Prevent pkg-config from finding host libraries (like brotli) that aren't
++  # available for Android cross-compilation
++  export PKG_CONFIG_PATH=""
++  export PKG_CONFIG_LIBDIR=""
+   if [[ -n "${ANDROID_ABI:-}" ]]; then
+     CMAKE_ARGS+=("-DANDROID_ABI=${ANDROID_ABI}")
+   fi
