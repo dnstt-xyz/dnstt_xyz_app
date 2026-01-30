@@ -86,7 +86,8 @@ class MainActivity : FlutterActivity() {
                     val dnsServer = call.argument<String>("dnsServer") ?: "8.8.8.8"
                     val tunnelDomain = call.argument<String>("tunnelDomain") ?: ""
                     val publicKey = call.argument<String>("publicKey") ?: ""
-                    connectVpn(proxyHost, proxyPort, dnsServer, tunnelDomain, publicKey, result)
+                    val sshMode = call.argument<Boolean>("sshMode") ?: false
+                    connectVpn(proxyHost, proxyPort, dnsServer, tunnelDomain, publicKey, sshMode, result)
                 }
                 "disconnect" -> disconnectVpn(result)
                 "isConnected" -> result.success(DnsttVpnService.isRunning.get())
@@ -234,16 +235,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // Pending SSH mode for VPN permission flow
+    private var pendingSshMode: Boolean = false
+
     private fun connectVpn(
         proxyHost: String,
         proxyPort: Int,
         dnsServer: String,
         tunnelDomain: String,
         publicKey: String,
+        sshMode: Boolean,
         result: MethodChannel.Result
     ) {
         pendingTunnelDomain = tunnelDomain
         pendingPublicKey = publicKey
+        pendingSshMode = sshMode
         // Check if VPN permission is granted
         val intent = VpnService.prepare(this)
         if (intent != null) {
@@ -257,11 +263,11 @@ class MainActivity : FlutterActivity() {
         }
 
         // Start VPN service
-        startVpnService(proxyHost, proxyPort, dnsServer, tunnelDomain, publicKey)
+        startVpnService(proxyHost, proxyPort, dnsServer, tunnelDomain, publicKey, sshMode)
         result.success(true)
     }
 
-    private fun startVpnService(proxyHost: String, proxyPort: Int, dnsServer: String, tunnelDomain: String, publicKey: String) {
+    private fun startVpnService(proxyHost: String, proxyPort: Int, dnsServer: String, tunnelDomain: String, publicKey: String, sshMode: Boolean = false) {
         val serviceIntent = Intent(this, DnsttVpnService::class.java).apply {
             action = DnsttVpnService.ACTION_CONNECT
             putExtra(DnsttVpnService.EXTRA_PROXY_HOST, proxyHost)
@@ -269,6 +275,7 @@ class MainActivity : FlutterActivity() {
             putExtra(DnsttVpnService.EXTRA_DNS_SERVER, dnsServer)
             putExtra(DnsttVpnService.EXTRA_TUNNEL_DOMAIN, tunnelDomain)
             putExtra(DnsttVpnService.EXTRA_PUBLIC_KEY, publicKey)
+            putExtra(DnsttVpnService.EXTRA_SSH_MODE, sshMode)
         }
         startForegroundService(serviceIntent)
     }
@@ -706,7 +713,8 @@ class MainActivity : FlutterActivity() {
                         pendingProxyPort!!,
                         pendingDnsServer ?: "8.8.8.8",
                         pendingTunnelDomain ?: "",
-                        pendingPublicKey ?: ""
+                        pendingPublicKey ?: "",
+                        pendingSshMode
                     )
                     pendingResult?.success(true)
                 } else {
@@ -726,6 +734,7 @@ class MainActivity : FlutterActivity() {
             pendingDnsServer = null
             pendingTunnelDomain = null
             pendingPublicKey = null
+            pendingSshMode = false
         }
     }
 

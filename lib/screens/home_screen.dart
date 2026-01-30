@@ -243,8 +243,8 @@ class _HomeScreenState extends State<HomeScreen> {
             // Large toggle button
             GestureDetector(
               onTap: () {
-                // Allow connection if full config available OR slipstream mode with just DNS
-                final canTapConnect = canConnect || (_connectionMode == ConnectionMode.slipstream && canConnectSlipstream);
+                // Allow connection if full config available OR slipstream config available (proxy or VPN mode)
+                final canTapConnect = canConnect || ((_connectionMode == ConnectionMode.slipstream || _connectionMode == ConnectionMode.vpn) && canConnectSlipstream);
                 if (isConnecting) {
                   _cancelConnection(context, state);
                 } else if (isConnected) {
@@ -264,7 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? Colors.orange
                           : isError
                               ? Colors.red[700]
-                              : ((canConnect || (_connectionMode == ConnectionMode.slipstream && canConnectSlipstream)) ? Colors.grey[700] : Colors.grey[400]),
+                              : ((canConnect || ((_connectionMode == ConnectionMode.slipstream || _connectionMode == ConnectionMode.vpn) && canConnectSlipstream)) ? Colors.grey[700] : Colors.grey[400]),
                   boxShadow: [
                     BoxShadow(
                       color: (isConnected ? Colors.green : isConnecting ? Colors.orange : Colors.grey).withOpacity(0.3),
@@ -283,7 +283,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       : Icon(
                           isError ? Icons.refresh : Icons.power_settings_new,
                           size: 60,
-                          color: isConnected || canConnect || isError || (_connectionMode == ConnectionMode.slipstream && canConnectSlipstream)
+                          color: isConnected || canConnect || isError || ((_connectionMode == ConnectionMode.slipstream || _connectionMode == ConnectionMode.vpn) && canConnectSlipstream)
                               ? Colors.white
                               : Colors.grey[300],
                         ),
@@ -533,8 +533,8 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icons.vpn_key,
             label: 'VPN',
             isSelected: _connectionMode == ConnectionMode.vpn,
-            isEnabled: canConnect,
-            onTap: canConnect ? () => setState(() => _connectionMode = ConnectionMode.vpn) : null,
+            isEnabled: canConnect || canConnectSlipstream,
+            onTap: (canConnect || canConnectSlipstream) ? () => setState(() => _connectionMode = ConnectionMode.vpn) : null,
           ),
           const SizedBox(width: 4),
           _buildModeButton(
@@ -820,11 +820,15 @@ class _HomeScreenState extends State<HomeScreen> {
     final isSshTunnel = state.activeConfig?.tunnelType == TunnelType.ssh;
     final useProxyMode = isDesktop || (Platform.isAndroid && _connectionMode == ConnectionMode.proxy);
     final useSlipstreamMode = Platform.isAndroid && _connectionMode == ConnectionMode.slipstream;
+    // VPN mode with Slipstream config selected
+    final useSlipstreamVpn = Platform.isAndroid && _connectionMode == ConnectionMode.vpn && state.activeSlipstreamConfig != null;
 
     // Determine connection type for permission and messages
     String connectionType;
     if (useSlipstreamMode) {
       connectionType = 'Slipstream (QUIC-over-DNS)';
+    } else if (useSlipstreamVpn) {
+      connectionType = 'Slipstream VPN';
     } else if (isSshTunnel) {
       connectionType = useProxyMode ? 'SSH tunnel (proxy)' : 'SSH tunnel (VPN)';
     } else {
@@ -934,8 +938,29 @@ class _HomeScreenState extends State<HomeScreen> {
         publicKey: state.activeConfig?.publicKey,
         proxyPort: state.proxyPort,
       );
+    } else if (useSlipstreamVpn) {
+      // VPN mode with Slipstream tunnel
+      final slipstreamConfig = state.activeSlipstreamConfig!;
+      final resolver = slipstreamConfig.resolver ?? state.activeDns?.address ?? '8.8.8.8';
+
+      // First start Slipstream proxy
+      success = await _vpnService.connectSlipstream(
+        dnsServer: resolver,
+        tunnelDomain: slipstreamConfig.tunnelDomain,
+        proxyPort: 7000,
+        authoritative: slipstreamConfig.authoritative,
+      );
+
+      if (success) {
+        // Then start VPN routing through existing Slipstream proxy
+        success = await _vpnService.connect(
+          proxyHost: '127.0.0.1',
+          proxyPort: 7000,
+          sshMode: true, // Skip dnstt-client, use existing Slipstream proxy
+        );
+      }
     } else {
-      // VPN mode (Android)
+      // VPN mode with DNSTT (Android)
       success = await _vpnService.connect(
         proxyHost: '127.0.0.1',
         proxyPort: state.proxyPort,
@@ -949,7 +974,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (success) {
         String successMessage;
         if (useSlipstreamMode) {
-          successMessage = 'Slipstream tunnel started on 127.0.0.1:7000';
+          successMessage = 'Slipstream proxy started on 127.0.0.1:7000';
+        } else if (useSlipstreamVpn) {
+          successMessage = 'Slipstream VPN connected';
         } else if (isSshTunnel && useProxyMode) {
           successMessage = 'SSH tunnel (proxy) started on ${_vpnService.socksProxyAddress}';
         } else if (isSshTunnel && !useProxyMode) {
@@ -984,8 +1011,14 @@ class _HomeScreenState extends State<HomeScreen> {
     final wasProxyMode = _vpnService.isProxyMode;
     final wasSshTunnelMode = _vpnService.isSshTunnelMode;
     final wasSlipstreamMode = _vpnService.isSlipstreamMode;
+    // Slipstream VPN mode: both Slipstream and VPN (with sshMode) are running
+    final wasSlipstreamVpn = wasSlipstreamMode && wasSshTunnelMode;
 
-    if (wasSlipstreamMode && !isDesktop) {
+    if (wasSlipstreamVpn && !isDesktop) {
+      // Disconnect VPN first, then Slipstream
+      await _vpnService.disconnect();
+      await _vpnService.disconnectSlipstream();
+    } else if (wasSlipstreamMode && !isDesktop) {
       await _vpnService.disconnectSlipstream();
     } else if (wasSshTunnelMode && !isDesktop) {
       await _vpnService.disconnectSshTunnel();
@@ -997,8 +1030,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (context.mounted) {
       String disconnectMessage;
-      if (wasSlipstreamMode) {
-        disconnectMessage = 'Slipstream tunnel stopped';
+      if (wasSlipstreamVpn) {
+        disconnectMessage = 'Slipstream VPN disconnected';
+      } else if (wasSlipstreamMode) {
+        disconnectMessage = 'Slipstream proxy stopped';
       } else if (wasSshTunnelMode) {
         disconnectMessage = 'SSH tunnel stopped';
       } else if (isDesktop || wasProxyMode) {
@@ -1013,7 +1048,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _cancelConnection(BuildContext context, AppState state) async {
-    if (_vpnService.isSlipstreamMode && !VpnService.isDesktopPlatform) {
+    final isSlipstreamVpn = _vpnService.isSlipstreamMode && _vpnService.isSshTunnelMode;
+    if (isSlipstreamVpn && !VpnService.isDesktopPlatform) {
+      await _vpnService.disconnect();
+      await _vpnService.disconnectSlipstream();
+    } else if (_vpnService.isSlipstreamMode && !VpnService.isDesktopPlatform) {
       await _vpnService.disconnectSlipstream();
     } else if (_vpnService.isSshTunnelMode && !VpnService.isDesktopPlatform) {
       await _vpnService.disconnectSshTunnel();

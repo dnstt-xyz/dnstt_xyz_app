@@ -159,13 +159,14 @@ class VpnService {
     String? dnsServer,
     String? tunnelDomain,
     String? publicKey,
+    bool sshMode = false,
   }) async {
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
     // Reset all mode flags for regular VPN mode
     _isProxyMode = false;
-    _isSshTunnelMode = false;
+    _isSshTunnelMode = sshMode;
 
     _connectedDns = dnsServer;
     _connectedDomain = tunnelDomain;
@@ -200,6 +201,7 @@ class VpnService {
               'dnsServer': dnsServer ?? '8.8.8.8',
               'tunnelDomain': tunnelDomain ?? '',
               'publicKey': publicKey ?? '',
+              'sshMode': sshMode,
             };
 
       final result = await _channel.invokeMethod<bool>('connect', params);
