@@ -46,6 +46,8 @@ class DnsttProxyService : Service() {
 
     private var dnsttClient: mobile.DnsttClient? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private val isConnecting = AtomicBoolean(false)
+    private var connectThread: Thread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -57,7 +59,13 @@ class DnsttProxyService : Service() {
                 publicKey = intent.getStringExtra(EXTRA_PUBLIC_KEY) ?: ""
                 proxyPort = intent.getIntExtra(EXTRA_PROXY_PORT, 7000)
                 shareProxy = intent.getBooleanExtra(EXTRA_SHARE_PROXY, false)
-                Thread { connect() }.start()
+                // Prevent multiple connect threads from racing
+                if (isConnecting.compareAndSet(false, true)) {
+                    connectThread = Thread { connect() }
+                    connectThread?.start()
+                } else {
+                    Log.d(TAG, "Connection already in progress, ignoring")
+                }
                 START_STICKY
             }
             ACTION_DISCONNECT -> {
@@ -71,6 +79,7 @@ class DnsttProxyService : Service() {
     private fun connect() {
         if (isRunning.get()) {
             Log.d(TAG, "Proxy already running")
+            isConnecting.set(false)
             return
         }
 
@@ -88,6 +97,7 @@ class DnsttProxyService : Service() {
             // Start DNSTT client
             if (!startDnsttClient()) {
                 Log.e(TAG, "Failed to start DNSTT client")
+                isConnecting.set(false)
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     stateCallback?.invoke("proxy_error")
                 }
@@ -98,6 +108,7 @@ class DnsttProxyService : Service() {
             }
 
             isRunning.set(true)
+            isConnecting.set(false)
 
             // Update notification
             updateNotification("connected")
@@ -110,6 +121,7 @@ class DnsttProxyService : Service() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start proxy service", e)
+            isConnecting.set(false)
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 stateCallback?.invoke("proxy_error")
             }
@@ -207,6 +219,7 @@ class DnsttProxyService : Service() {
         releaseWakeLock()
 
         isRunning.set(false)
+        isConnecting.set(false)
         stateCallback?.invoke("proxy_disconnected")
 
         stopForeground(STOP_FOREGROUND_REMOVE)
