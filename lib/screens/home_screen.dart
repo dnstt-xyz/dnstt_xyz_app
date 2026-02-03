@@ -77,7 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildProxyNotice(BuildContext context, AppState state) {
     final isSshTunnel = _vpnService.isSshTunnelMode;
     final proxyAddress = _vpnService.socksProxyAddress;
-    final proxyPort = 1080;
+    final proxyPort = state.proxyPort;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -574,6 +574,15 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 12),
         _buildMenuCard(
           context,
+          icon: Icons.settings,
+          title: 'Settings',
+          subtitle: 'Proxy port: ${state.proxyPort}',
+          onTap: () => _showSettingsDialog(context, state),
+          color: Colors.blueGrey,
+        ),
+        const SizedBox(height: 12),
+        _buildMenuCard(
+          context,
           icon: Icons.favorite,
           title: 'Support Us',
           subtitle: 'Donate to help improve the app',
@@ -617,6 +626,77 @@ class _HomeScreenState extends State<HomeScreen> {
         trailing: const Icon(Icons.chevron_right),
         onTap: onTap,
         enabled: onTap != null,
+      ),
+    );
+  }
+
+  void _showSettingsDialog(BuildContext context, AppState state) {
+    final TextEditingController portController = TextEditingController(
+      text: state.proxyPort.toString(),
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Settings'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Local Proxy Port',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: portController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                hintText: '1080',
+                helperText: 'Port for local SOCKS5 proxy (1-65535)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Note: Change takes effect on next connection.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final portText = portController.text.trim();
+              final port = int.tryParse(portText);
+              if (port != null && port >= 1 && port <= 65535) {
+                state.setProxyPort(port);
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Proxy port set to $port'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Please enter a valid port (1-65535)'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
       ),
     );
   }
@@ -679,6 +759,9 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    // Set the proxy port on VpnService for display purposes
+    _vpnService.proxyPort = state.proxyPort;
+
     bool success;
 
     if (isSshTunnel && useProxyMode) {
@@ -709,13 +792,13 @@ class _HomeScreenState extends State<HomeScreen> {
         dnsServer: state.activeDns?.address ?? '8.8.8.8',
         tunnelDomain: state.activeConfig?.tunnelDomain,
         publicKey: state.activeConfig?.publicKey,
-        proxyPort: 1080,
+        proxyPort: state.proxyPort,
       );
     } else {
       // VPN mode (Android)
       success = await _vpnService.connect(
         proxyHost: '127.0.0.1',
-        proxyPort: 1080,
+        proxyPort: state.proxyPort,
         dnsServer: state.activeDns?.address ?? '8.8.8.8',
         tunnelDomain: state.activeConfig?.tunnelDomain,
         publicKey: state.activeConfig?.publicKey,

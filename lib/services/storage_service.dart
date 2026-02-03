@@ -9,6 +9,8 @@ class StorageService {
   static const String _activeConfigKey = 'active_config';
   static const String _activeDnsKey = 'active_dns';
   static const String _testUrlKey = 'test_url';
+  static const String _proxyPortKey = 'proxy_port';
+  static const int defaultProxyPort = 1080;
 
   final SharedPreferences _prefs;
 
@@ -121,5 +123,14 @@ class StorageService {
 
   Future<void> setTestUrl(String url) async {
     await _prefs.setString(_testUrlKey, url);
+  }
+
+  // Proxy Port
+  Future<int> getProxyPort() async {
+    return _prefs.getInt(_proxyPortKey) ?? defaultProxyPort;
+  }
+
+  Future<void> setProxyPort(int port) async {
+    await _prefs.setInt(_proxyPortKey, port);
   }
 }

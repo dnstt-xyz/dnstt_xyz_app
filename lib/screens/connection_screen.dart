@@ -373,7 +373,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     // Connect to VPN
     final success = await _vpnService.connect(
       proxyHost: '127.0.0.1',
-      proxyPort: 1080,
+      proxyPort: state.proxyPort,
       dnsServer: state.activeDns!.address,
       tunnelDomain: state.activeConfig!.tunnelDomain,
       publicKey: state.activeConfig!.publicKey,
