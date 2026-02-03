@@ -39,12 +39,15 @@ class VpnService {
   bool _isProxyMode = false;
   bool get isProxyMode => _isProxyMode;
 
+  // Configurable proxy port
+  int proxyPort = 1080;
+
   /// Check if we're on a desktop platform
   static bool get isDesktopPlatform =>
       Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
-  /// Get the SOCKS proxy address when connected on desktop
-  String get socksProxyAddress => '127.0.0.1:1080';
+  /// Get the SOCKS proxy address when connected
+  String get socksProxyAddress => '127.0.0.1:$proxyPort';
 
   /// Get the last error message
   String? get lastError => _lastError;
@@ -330,7 +333,7 @@ class VpnService {
   }
 
   /// Connect SSH tunnel on desktop using DNSTT FFI + system ssh command
-  /// DNSTT creates TCP tunnel on internal port 7001, SSH creates SOCKS5 on port 1080
+  /// DNSTT creates TCP tunnel on internal port 7001, SSH creates SOCKS5 on configured proxy port
   Future<bool> _connectSshTunnelDesktop({
     required String dnsServer,
     required String tunnelDomain,
@@ -391,8 +394,8 @@ class VpnService {
       // Give DNSTT a moment to establish the tunnel
       await Future.delayed(const Duration(seconds: 2));
 
-      // Step 2: Start SSH with dynamic port forwarding on port 1080
-      final bindAddress = '1080';
+      // Step 2: Start SSH with dynamic port forwarding on configured proxy port
+      final bindAddress = '$proxyPort';
 
       // DNSTT creates a SOCKS5 proxy on port 7001, so SSH must use ProxyCommand
       // to connect through the SOCKS5 proxy to the SSH server (via tunnel)
@@ -491,7 +494,7 @@ class VpnService {
         return false;
       }
 
-      print('SSH tunnel established on port 1080');
+      print('SSH tunnel established on port $proxyPort');
       _currentState = VpnState.connected;
       _stateController.add(_currentState);
       return true;
@@ -662,7 +665,7 @@ class VpnService {
   }
 
   /// Connect SSH tunnel over DNSTT
-  /// Flow: DNSTT tunnel -> SSH client -> SSH dynamic port forwarding -> local SOCKS5 proxy on port 1080
+  /// Flow: DNSTT tunnel -> SSH client -> SSH dynamic port forwarding -> local SOCKS5 proxy on configured port
   Future<bool> connectSshTunnel({
     String? dnsServer,
     String? tunnelDomain,

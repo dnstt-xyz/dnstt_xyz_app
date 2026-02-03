@@ -338,7 +338,7 @@ class _TestScreenState extends State<TestScreen> {
         try {
           connected = await _vpnService.connect(
             proxyHost: '127.0.0.1',
-            proxyPort: 1080,
+            proxyPort: state.proxyPort,
             dnsServer: server.address,
             tunnelDomain: state.activeConfig?.tunnelDomain,
             publicKey: state.activeConfig?.publicKey,

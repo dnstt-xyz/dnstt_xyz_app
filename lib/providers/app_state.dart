@@ -23,6 +23,7 @@ class AppState extends ChangeNotifier {
   int _testingWorking = 0;
   int _testingFailed = 0;
   String _testUrl = 'https://www.google.com';
+  int _proxyPort = StorageService.defaultProxyPort;
 
   List<DnsServer> get dnsServers => _dnsServers;
   List<DnsttConfig> get dnsttConfigs => _dnsttConfigs;
@@ -33,6 +34,7 @@ class AppState extends ChangeNotifier {
   bool get isTestingAll => _isTestingAll;
   bool isDnsBeingTested(String id) => _testingDns[id] ?? false;
   String get testUrl => _testUrl;
+  int get proxyPort => _proxyPort;
   int get testingProgress => _testingProgress;
   int get testingTotal => _testingTotal;
   int get testingWorking => _testingWorking;
@@ -63,6 +65,7 @@ class AppState extends ChangeNotifier {
     }
 
     _testUrl = await _storage!.getTestUrl() ?? 'https://www.google.com';
+    _proxyPort = await _storage!.getProxyPort();
 
     notifyListeners();
   }
@@ -437,6 +440,13 @@ class AppState extends ChangeNotifier {
   Future<void> setTestUrl(String url) async {
     _testUrl = url;
     await _storage!.setTestUrl(url);
+    notifyListeners();
+  }
+
+  // Proxy Port
+  Future<void> setProxyPort(int port) async {
+    _proxyPort = port;
+    await _storage!.setProxyPort(port);
     notifyListeners();
   }
 }
