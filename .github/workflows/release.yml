@@ -224,12 +224,28 @@ jobs:
 
       - name: Pre-build picoquic for slipstream
         shell: bash
+        continue-on-error: true
         run: |
+          exec > >(tee /d/picoquic-build.log) 2>&1
+          set -ex
           export PATH="/c/mingw64/bin:/c/ProgramData/chocolatey/bin:$PATH"
           export OPENSSL_ROOT_DIR="/c/Strawberry/c"
           export PKG_CONFIG_PATH="/c/Strawberry/c/lib/pkgconfig"
 
+          echo "=== Tool versions ==="
+          gcc --version | head -1
+          cmake --version | head -1
+          ninja --version || true
+          pkg-config --version || true
+          echo "=== OpenSSL check ==="
+          ls /c/Strawberry/c/include/openssl/ssl.h || true
+          ls /c/Strawberry/c/lib/libssl* || true
+          ls /c/Strawberry/c/lib/pkgconfig/openssl.pc || true
+          echo "=== PATH ==="
+          echo "$PATH" | tr ':' '\n' | head -20
+
           cd vendor/slipstream-rust
+          ls vendor/picoquic/CMakeLists.txt || echo "MISSING picoquic"
 
           # Build picoquic with cmake + Ninja + GCC (produces .a files)
           cmake -S vendor/picoquic -B .picoquic-build \
@@ -248,6 +264,15 @@ jobs:
             -Dpicoquic_BUILD_TESTS=OFF
 
           cmake --build .picoquic-build --target picoquic-core
+          echo "=== Build artifacts ==="
+          find .picoquic-build -name "*.a" -o -name "*.lib" | head -20
+
+      - name: Upload picoquic build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picoquic-build-log
+          path: D:\picoquic-build.log
 
       - name: Build slipstream-client for Windows
         shell: bash
