@@ -230,15 +230,26 @@ jobs:
           # Use Strawberry Perl's OpenSSL (has dev headers + static libs + .pc files)
           export OPENSSL_ROOT_DIR="/c/Strawberry/c"
           export PKG_CONFIG_PATH="/c/Strawberry/c/lib/pkgconfig"
-          echo "GCC: $(which gcc) - $(gcc --version | head -1)"
-          echo "pkg-config: $(which pkg-config || echo 'not found')"
-          echo "OpenSSL headers: $(ls /c/Strawberry/c/include/openssl/ssl.h 2>/dev/null || echo 'not found')"
+
+          # Diagnostics
+          echo "=== Environment ==="
+          which gcc && gcc --version | head -1 || echo "gcc not found"
+          which cmake && cmake --version | head -1 || echo "cmake not found"
+          which ninja && ninja --version || echo "ninja not found"
+          which mingw32-make || echo "mingw32-make not found"
+          which pkg-config || echo "pkg-config not found"
+          ls -la /c/Strawberry/c/include/openssl/ssl.h 2>/dev/null || echo "Strawberry OpenSSL headers not found"
+          ls -la /c/Strawberry/c/lib/libssl* 2>/dev/null || echo "Strawberry OpenSSL libs not found"
 
           cd vendor/slipstream-rust
+          ls vendor/picoquic/CMakeLists.txt 2>/dev/null || { echo "ERROR: picoquic submodule not found"; exit 1; }
 
-          # Build picoquic directly with cmake (skip .sh script which fails on Windows)
+          # Build picoquic directly with cmake (skip .sh which fails on Windows)
+          # Use Ninja generator (always available on Windows) with GCC compiler
           cmake -S vendor/picoquic -B .picoquic-build \
-            -G "MinGW Makefiles" \
+            -G Ninja \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++ \
             -DCMAKE_BUILD_TYPE=Release \
             -DPICOQUIC_FETCH_PTLS=ON \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -254,7 +265,7 @@ jobs:
 
           # Verify build artifacts
           echo "=== Picoquic build artifacts ==="
-          find .picoquic-build -name "*.a" | head -20
+          find .picoquic-build -name "*.a" -o -name "*.lib" | head -20
 
       - name: Build slipstream-client for Windows
         shell: bash
