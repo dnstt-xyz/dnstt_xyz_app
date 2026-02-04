@@ -227,9 +227,13 @@ jobs:
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          :: Remove Strawberry Perl's GCC from PATH so cmake finds MSVC instead
+          set "PATH=%PATH:C:\Strawberry\c\bin;=%"
+          set CC=cl.exe
+          set CXX=cl.exe
+          set CMAKE_GENERATOR=NMake Makefiles
           cd vendor\slipstream-rust
           set RUSTFLAGS=--remap-path-prefix=%CD%=/build/s
-          set CC=cl.exe
           cargo build -p slipstream-client --release --features openssl-vendored
           if not exist ..\..\windows\runner\tools mkdir ..\..\windows\runner\tools
           copy target\release\slipstream-client.exe ..\..\windows\runner\tools\
