@@ -7,15 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v1.0.0)'
+        description: 'Version tag (e.g., v2.2.0-beta)'
         required: true
-        default: 'v2.0.0'
+        default: 'v2.2.0-beta'
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -28,6 +30,9 @@ jobs:
         with:
           flutter-version: '3.38.7'
           channel: 'stable'
+
+      # Android uses the pre-compiled slipstream binary from jniLibs/
+      # (committed to repo). To rebuild, run scripts/build_slipstream_android.sh
 
       - name: Get dependencies
         run: flutter pub get
@@ -48,6 +53,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -60,6 +67,9 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Build Go library for macOS ARM64
         run: |
           cd go_src
@@ -67,17 +77,35 @@ jobs:
           mkdir -p ../macos/Runner/Libraries
           cp libdnstt.dylib ../macos/Runner/Libraries/
 
+      - name: Build slipstream-client for macOS ARM64
+        run: |
+          cd vendor/slipstream-rust
+          RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/s --remap-path-prefix=$HOME=/_" \
+          cargo build -p slipstream-client --release --features openssl-vendored
+          cp target/release/slipstream-client ../../macos/Runner/Libraries/slipstream-client
+          chmod +x ../../macos/Runner/Libraries/slipstream-client
+
       - name: Get dependencies
         run: flutter pub get
 
       - name: Build macOS app
         run: flutter build macos --release
 
-      - name: Copy dylib to app bundle
+      - name: Bundle libraries into app
         run: |
-          cp go_src/libdnstt.dylib build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/
-          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/libdnstt.dylib
-          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app
+          FRAMEWORKS="build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks"
+          # DNSTT library
+          cp go_src/libdnstt.dylib "$FRAMEWORKS/"
+          install_name_tool -id "@rpath/libdnstt.dylib" "$FRAMEWORKS/libdnstt.dylib"
+          codesign --force --sign - "$FRAMEWORKS/libdnstt.dylib"
+          # Slipstream client (statically linked, no OpenSSL dylibs needed with vendored feature)
+          cp macos/Runner/Libraries/slipstream-client "$FRAMEWORKS/slipstream-client"
+          chmod +x "$FRAMEWORKS/slipstream-client"
+          codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
+          # Re-sign entire app
+          codesign --force --deep --sign - "build/macos/Build/Products/Release/DNSTT_XYZ.app"
+          # Re-apply inherit entitlement (deep signing strips per-binary entitlements)
+          codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
 
       - name: Create DMG
         run: |
@@ -96,6 +124,8 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -108,6 +138,9 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Build Go library for macOS Intel
         run: |
           cd go_src
@@ -115,17 +148,31 @@ jobs:
           mkdir -p ../macos/Runner/Libraries
           cp libdnstt.dylib ../macos/Runner/Libraries/
 
+      - name: Build slipstream-client for macOS Intel
+        run: |
+          cd vendor/slipstream-rust
+          RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/s --remap-path-prefix=$HOME=/_" \
+          cargo build -p slipstream-client --release --features openssl-vendored
+          cp target/release/slipstream-client ../../macos/Runner/Libraries/slipstream-client
+          chmod +x ../../macos/Runner/Libraries/slipstream-client
+
       - name: Get dependencies
         run: flutter pub get
 
       - name: Build macOS app
         run: flutter build macos --release
 
-      - name: Copy dylib to app bundle
+      - name: Bundle libraries into app
         run: |
-          cp go_src/libdnstt.dylib build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/
-          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks/libdnstt.dylib
-          codesign --force --sign - build/macos/Build/Products/Release/DNSTT_XYZ.app
+          FRAMEWORKS="build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks"
+          cp go_src/libdnstt.dylib "$FRAMEWORKS/"
+          install_name_tool -id "@rpath/libdnstt.dylib" "$FRAMEWORKS/libdnstt.dylib"
+          codesign --force --sign - "$FRAMEWORKS/libdnstt.dylib"
+          cp macos/Runner/Libraries/slipstream-client "$FRAMEWORKS/slipstream-client"
+          chmod +x "$FRAMEWORKS/slipstream-client"
+          codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
+          codesign --force --deep --sign - "build/macos/Build/Products/Release/DNSTT_XYZ.app"
+          codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
 
       - name: Create DMG
         run: |
@@ -144,6 +191,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -156,11 +205,25 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CMake and Perl
+        run: choco install cmake perl -y
+
       - name: Build Go library for Windows
         run: |
           cd go_src
           $env:CGO_ENABLED=1
           go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dnstt.dll ./desktop
+
+      - name: Build slipstream-client for Windows
+        run: |
+          cd vendor/slipstream-rust
+          $env:RUSTFLAGS="--remap-path-prefix=$(Get-Location)=/build/s"
+          cargo build -p slipstream-client --release --features openssl-vendored
+          New-Item -ItemType Directory -Force -Path ../../windows/runner/tools
+          Copy-Item target/release/slipstream-client.exe ../../windows/runner/tools/
 
       - name: Get dependencies
         run: flutter pub get
@@ -168,9 +231,10 @@ jobs:
       - name: Build Windows app
         run: flutter build windows --release
 
-      - name: Copy DLL to build
+      - name: Copy binaries to build
         run: |
           Copy-Item go_src/dnstt.dll build/windows/x64/runner/Release/
+          Copy-Item windows/runner/tools/slipstream-client.exe build/windows/x64/runner/Release/
 
       - name: Create ZIP archive
         run: |
@@ -186,11 +250,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev perl
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -203,10 +269,22 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Build Go library for Linux
         run: |
           cd go_src
           CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o libdnstt.so ./desktop
+
+      - name: Build slipstream-client for Linux
+        run: |
+          cd vendor/slipstream-rust
+          RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/s --remap-path-prefix=$HOME=/_" \
+          cargo build -p slipstream-client --release --features openssl-vendored
+          mkdir -p ../../linux/tools
+          cp target/release/slipstream-client ../../linux/tools/slipstream-client
+          chmod +x ../../linux/tools/slipstream-client
 
       - name: Get dependencies
         run: flutter pub get
@@ -214,9 +292,11 @@ jobs:
       - name: Build Linux app
         run: flutter build linux --release
 
-      - name: Copy library to build
+      - name: Copy libraries to build
         run: |
           cp go_src/libdnstt.so build/linux/x64/release/bundle/lib/
+          cp linux/tools/slipstream-client build/linux/x64/release/bundle/lib/
+          chmod +x build/linux/x64/release/bundle/lib/slipstream-client
 
       - name: Create tarball
         run: |
@@ -272,6 +352,8 @@ jobs:
           body: |
             ## DNSTT Client Release
 
+            **Now with Slipstream protocol support** - QUIC-over-DNS tunnel for ~5x faster speeds.
+
             ### Downloads
 
             #### Android
@@ -287,17 +369,21 @@ jobs:
             - **Windows**
             - **Linux**
 
+            ### Protocols
+            - **DNSTT** - DNS-encoded tunnel (KCP + Noise encryption)
+            - **Slipstream** - QUIC-over-DNS tunnel (faster, TLS 1.3)
+
             ### Notes
-            - **Android**: Tunnels all device traffic through DNS (VPN mode)
-            - **Desktop**: Runs a SOCKS5 proxy on `127.0.0.1:7000` - configure your apps to use this proxy
+            - **Android**: Tunnels all device traffic through DNS (VPN mode) or local proxy
+            - **Desktop**: Runs a SOCKS5 proxy - configure your apps to use it
 
             ### How to Use (Desktop)
             1. Download and install the app for your platform
-            2. Add your DNSTT configuration (tunnel domain + public key)
+            2. Add a configuration (DNSTT or Slipstream)
             3. Select a DNS server
             4. Click Connect
-            5. Configure your browser/apps to use SOCKS5 proxy: `127.0.0.1:7000`
+            5. Configure your browser/apps to use the SOCKS5 proxy shown in the app
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.event.inputs.version || github.ref_name, 'beta') || contains(github.event.inputs.version || github.ref_name, 'alpha') || contains(github.event.inputs.version || github.ref_name, 'rc') }}
           files: |
             release/*
