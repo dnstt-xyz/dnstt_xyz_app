@@ -225,8 +225,11 @@ jobs:
       - name: Pre-build picoquic for slipstream
         shell: bash
         run: |
-          # Use MinGW-w64 toolchain (build.rs uses GCC-style flags)
-          export PATH="/c/mingw64/bin:$PATH"
+          set -x
+          # MinGW first in PATH, remove Strawberry Perl's GCC (keep its Perl)
+          export PATH="/c/mingw64/bin:$(echo "$PATH" | tr ':' '\n' | grep -vi 'strawberry/c' | tr '\n' ':')"
+          which gcc && gcc --version
+          which perl && perl --version | head -2
           cd vendor/slipstream-rust
 
           # Find system OpenSSL for cmake headers
@@ -243,15 +246,21 @@ jobs:
           fi
           echo "Using OpenSSL at: $OPENSSL_ROOT_DIR"
 
-          # Build only picoquic-core (skip demo/tests to avoid MinGW linker issues)
+          # Build picoquic with MinGW (produces .a files that build.rs expects)
           export CARGO_FEATURE_PICOQUIC_MINIMAL_BUILD=1
           export CMAKE_GENERATOR="MinGW Makefiles"
           bash scripts/build_picoquic.sh
 
+          # Verify picoquic built correctly
+          echo "=== Picoquic build artifacts ==="
+          find .picoquic-build -name "*.a" 2>/dev/null || echo "No .a files found"
+
       - name: Build slipstream-client for Windows
         shell: bash
         run: |
-          export PATH="/c/mingw64/bin:$PATH"
+          set -x
+          # MinGW first in PATH, remove Strawberry Perl's GCC (keep its Perl)
+          export PATH="/c/mingw64/bin:$(echo "$PATH" | tr ':' '\n' | grep -vi 'strawberry/c' | tr '\n' ':')"
           cd vendor/slipstream-rust
           export CC=gcc
           export AR=ar
