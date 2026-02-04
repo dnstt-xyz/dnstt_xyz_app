@@ -207,6 +207,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
 
       - name: Install Perl (needed for OpenSSL vendored build)
         run: |
@@ -214,29 +216,50 @@ jobs:
           Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
           refreshenv
 
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Build Go library for Windows
         run: |
           cd go_src
           $env:CGO_ENABLED=1
           go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dnstt.dll ./desktop
 
-      - name: Build slipstream-client for Windows
-        shell: cmd
+      - name: Pre-build picoquic for slipstream
+        shell: bash
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          :: Remove Strawberry Perl's GCC from PATH so cmake finds MSVC instead
-          set "PATH=%PATH:C:\Strawberry\c\bin;=%"
-          set CC=cl.exe
-          set CXX=cl.exe
-          set CMAKE_GENERATOR=NMake Makefiles
-          cd vendor\slipstream-rust
-          set RUSTFLAGS=--remap-path-prefix=%CD%=/build/s
-          cargo build -p slipstream-client --release --features openssl-vendored
-          if not exist ..\..\windows\runner\tools mkdir ..\..\windows\runner\tools
-          copy target\release\slipstream-client.exe ..\..\windows\runner\tools\
+          # Use MinGW-w64 toolchain (build.rs uses GCC-style flags)
+          export PATH="/c/mingw64/bin:$PATH"
+          cd vendor/slipstream-rust
+
+          # Find system OpenSSL for cmake headers
+          for d in "/c/Program Files/OpenSSL-Win64" "/c/Program Files/OpenSSL" "/c/OpenSSL-Win64" "/c/OpenSSL"; do
+            if [ -d "$d/include/openssl" ]; then
+              export OPENSSL_ROOT_DIR="$d"
+              break
+            fi
+          done
+          if [ -z "${OPENSSL_ROOT_DIR:-}" ]; then
+            echo "No system OpenSSL found, installing..."
+            choco install openssl -y --no-progress
+            export OPENSSL_ROOT_DIR="/c/Program Files/OpenSSL-Win64"
+          fi
+          echo "Using OpenSSL at: $OPENSSL_ROOT_DIR"
+
+          # Build only picoquic-core (skip demo/tests to avoid MinGW linker issues)
+          export CARGO_FEATURE_PICOQUIC_MINIMAL_BUILD=1
+          export CMAKE_GENERATOR="MinGW Makefiles"
+          bash scripts/build_picoquic.sh
+
+      - name: Build slipstream-client for Windows
+        shell: bash
+        run: |
+          export PATH="/c/mingw64/bin:$PATH"
+          cd vendor/slipstream-rust
+          export CC=gcc
+          export AR=ar
+          export PICOQUIC_AUTO_BUILD=0
+          RUSTFLAGS="--remap-path-prefix=$(pwd)=/build/s" \
+          cargo build -p slipstream-client --release --target x86_64-pc-windows-gnu --features openssl-vendored
+          mkdir -p ../../windows/runner/tools
+          cp target/x86_64-pc-windows-gnu/release/slipstream-client.exe ../../windows/runner/tools/
 
       - name: Get dependencies
         run: flutter pub get
