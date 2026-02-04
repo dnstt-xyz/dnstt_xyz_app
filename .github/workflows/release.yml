@@ -226,41 +226,41 @@ jobs:
         shell: bash
         run: |
           set -x
-          # MinGW first in PATH, remove Strawberry Perl's GCC (keep its Perl)
-          export PATH="/c/mingw64/bin:$(echo "$PATH" | tr ':' '\n' | grep -vi 'strawberry/c' | tr '\n' ':')"
-          which gcc && gcc --version
-          which perl && perl --version | head -2
+          export PATH="/c/mingw64/bin:$PATH"
+          # Use Strawberry Perl's OpenSSL (has dev headers + static libs + .pc files)
+          export OPENSSL_ROOT_DIR="/c/Strawberry/c"
+          export PKG_CONFIG_PATH="/c/Strawberry/c/lib/pkgconfig"
+          echo "GCC: $(which gcc) - $(gcc --version | head -1)"
+          echo "pkg-config: $(which pkg-config || echo 'not found')"
+          echo "OpenSSL headers: $(ls /c/Strawberry/c/include/openssl/ssl.h 2>/dev/null || echo 'not found')"
+
           cd vendor/slipstream-rust
 
-          # Find system OpenSSL for cmake headers
-          for d in "/c/Program Files/OpenSSL-Win64" "/c/Program Files/OpenSSL" "/c/OpenSSL-Win64" "/c/OpenSSL"; do
-            if [ -d "$d/include/openssl" ]; then
-              export OPENSSL_ROOT_DIR="$d"
-              break
-            fi
-          done
-          if [ -z "${OPENSSL_ROOT_DIR:-}" ]; then
-            echo "No system OpenSSL found, installing..."
-            choco install openssl -y --no-progress
-            export OPENSSL_ROOT_DIR="/c/Program Files/OpenSSL-Win64"
-          fi
-          echo "Using OpenSSL at: $OPENSSL_ROOT_DIR"
+          # Build picoquic directly with cmake (skip .sh script which fails on Windows)
+          cmake -S vendor/picoquic -B .picoquic-build \
+            -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPICOQUIC_FETCH_PTLS=ON \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT_DIR" \
+            -DBUILD_DEMO=OFF \
+            -DBUILD_HTTP=OFF \
+            -DBUILD_LOGLIB=OFF \
+            -DBUILD_LOGREADER=OFF \
+            -Dpicoquic_BUILD_TESTS=OFF
 
-          # Build picoquic with MinGW (produces .a files that build.rs expects)
-          export CARGO_FEATURE_PICOQUIC_MINIMAL_BUILD=1
-          export CMAKE_GENERATOR="MinGW Makefiles"
-          bash scripts/build_picoquic.sh
+          cmake --build .picoquic-build --target picoquic-core
 
-          # Verify picoquic built correctly
+          # Verify build artifacts
           echo "=== Picoquic build artifacts ==="
-          find .picoquic-build -name "*.a" 2>/dev/null || echo "No .a files found"
+          find .picoquic-build -name "*.a" | head -20
 
       - name: Build slipstream-client for Windows
         shell: bash
         run: |
           set -x
-          # MinGW first in PATH, remove Strawberry Perl's GCC (keep its Perl)
-          export PATH="/c/mingw64/bin:$(echo "$PATH" | tr ':' '\n' | grep -vi 'strawberry/c' | tr '\n' ':')"
+          export PATH="/c/mingw64/bin:$PATH"
           cd vendor/slipstream-rust
           export CC=gcc
           export AR=ar
