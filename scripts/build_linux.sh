@@ -72,10 +72,27 @@ cp "$GO_SRC_DIR/libdnstt.so" "$LIB_DIR/"
 
 echo "Library copied successfully"
 
+# Step 3b: Bundle slipstream-client binary (if available)
+SLIPSTREAM_SRC="$PROJECT_DIR/linux/tools/slipstream-client"
+if [ -f "$SLIPSTREAM_SRC" ]; then
+    echo ""
+    echo "=== Step 3b: Bundling slipstream-client ==="
+    cp "$SLIPSTREAM_SRC" "$LIB_DIR/slipstream-client"
+    chmod +x "$LIB_DIR/slipstream-client"
+    echo "slipstream-client bundled"
+else
+    echo ""
+    echo "Note: slipstream-client not found at $SLIPSTREAM_SRC (skipping)"
+    echo "  Place the pre-built slipstream-client binary in linux/tools/ to bundle it"
+fi
+
 echo ""
 echo "=== Build Complete ==="
 echo "App location: $APP_PATH"
 echo "Executable: $APP_PATH/dnstt_xyz_app"
+echo ""
+echo "Contents:"
+ls -la "$LIB_DIR/" 2>/dev/null || echo "  (no libraries)"
 echo ""
 echo "To run the app:"
 echo "  cd \"$APP_PATH\" && ./dnstt_xyz_app"

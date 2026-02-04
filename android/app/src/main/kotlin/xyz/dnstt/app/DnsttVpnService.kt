@@ -16,7 +16,9 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.InetAddress
 import java.nio.ByteBuffer
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -40,6 +42,10 @@ class DnsttVpnService : VpnService() {
         const val EXTRA_SSH_MODE = "ssh_mode"
         const val EXTRA_SOCKS_USERNAME = "socks_username"
         const val EXTRA_SOCKS_PASSWORD = "socks_password"
+        const val EXTRA_TRANSPORT_TYPE = "transport_type"
+        const val EXTRA_CONGESTION_CONTROL = "congestion_control"
+        const val EXTRA_KEEP_ALIVE_INTERVAL = "keep_alive_interval"
+        const val EXTRA_GSO = "gso"
 
         var isRunning = AtomicBoolean(false)
         var stateCallback: ((String) -> Unit)? = null
@@ -54,6 +60,13 @@ class DnsttVpnService : VpnService() {
     private var isSshMode: Boolean = false
     private var socksUsername: String? = null
     private var socksPassword: String? = null
+    private var transportType: String = "dnstt"
+    private var congestionControl: String = "dcubic"
+    private var keepAliveInterval: Int = 400
+    private var gso: Boolean = false
+
+    // Slipstream bridge for VPN mode
+    private var slipstreamBridge: SlipstreamBridge? = null
 
     private var runningThread: Thread? = null
     private val shouldRun = AtomicBoolean(false)
@@ -62,6 +75,12 @@ class DnsttVpnService : VpnService() {
     private var wakeLock: PowerManager.WakeLock? = null
 
     private val tcpConnections = ConcurrentHashMap<String, TcpConnection>()
+
+    // Track SYN packets being processed asynchronously to avoid duplicate handling
+    private val pendingConnections: MutableSet<String> = Collections.synchronizedSet(HashSet())
+
+    // Thread pool for async SYN processing (slipstream SOCKS5 handshake goes through tunnel)
+    private var synExecutor = Executors.newFixedThreadPool(8)
 
     // Go-based dnstt client from gomobile library
     private var dnsttClient: mobile.DnsttClient? = null
@@ -77,6 +96,10 @@ class DnsttVpnService : VpnService() {
                 isSshMode = intent.getBooleanExtra(EXTRA_SSH_MODE, false)
                 socksUsername = intent.getStringExtra(EXTRA_SOCKS_USERNAME)
                 socksPassword = intent.getStringExtra(EXTRA_SOCKS_PASSWORD)
+                transportType = intent.getStringExtra(EXTRA_TRANSPORT_TYPE) ?: "dnstt"
+                congestionControl = intent.getStringExtra(EXTRA_CONGESTION_CONTROL) ?: "dcubic"
+                keepAliveInterval = intent.getIntExtra(EXTRA_KEEP_ALIVE_INTERVAL, 400)
+                gso = intent.getBooleanExtra(EXTRA_GSO, false)
                 // Run connect on background thread to avoid ANR
                 Thread { connect() }.start()
                 START_STICKY
@@ -174,6 +197,79 @@ class DnsttVpnService : VpnService() {
         dnsttClient = null
     }
 
+    private fun startSlipstreamClient(): Boolean {
+        if (tunnelDomain.isEmpty()) {
+            Log.e(TAG, "Tunnel domain not provided for slipstream")
+            return false
+        }
+
+        if (!SlipstreamBridge.isAvailable()) {
+            Log.e(TAG, "Slipstream library not available")
+            return false
+        }
+
+        try {
+            stopSlipstreamClient()
+
+            if (isPortInUse(proxyPort)) {
+                Log.w(TAG, "Port $proxyPort still in use, waiting...")
+                waitForPortRelease(proxyPort)
+                if (isPortInUse(proxyPort)) {
+                    Log.e(TAG, "Port $proxyPort still in use after waiting")
+                    return false
+                }
+            }
+
+            Log.d(TAG, "Starting Slipstream client")
+            Log.d(TAG, "DNS Server (resolver): $dnsServer, Domain: $tunnelDomain")
+            Log.d(TAG, "Listen address: $proxyHost:$proxyPort")
+
+            slipstreamBridge = SlipstreamBridge()
+            val started = slipstreamBridge!!.startClient(
+                domain = tunnelDomain,
+                dnsServer = dnsServer,
+                congestionControl = congestionControl,
+                keepAliveInterval = keepAliveInterval,
+                port = proxyPort,
+                host = proxyHost,
+                gso = gso
+            )
+
+            if (!started) {
+                Log.e(TAG, "Slipstream client failed to start: ${slipstreamBridge?.lastError}")
+                slipstreamBridge = null
+                return false
+            }
+
+            Thread.sleep(100)
+
+            if (verifySocks5Listening()) {
+                Log.d(TAG, "Slipstream SOCKS5 proxy verified on $proxyHost:$proxyPort")
+                return true
+            } else {
+                Log.w(TAG, "Slipstream SOCKS5 not responding, but bridge reports started")
+                return true
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start slipstream client", e)
+            return false
+        }
+    }
+
+    private fun stopSlipstreamClient() {
+        slipstreamBridge?.let { bridge ->
+            try {
+                bridge.stopClient()
+                Log.d(TAG, "Slipstream client stopped")
+                Thread.sleep(500)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping slipstream client", e)
+            }
+        }
+        slipstreamBridge = null
+    }
+
     private fun isPortInUse(port: Int): Boolean {
         return try {
             val socket = java.net.ServerSocket(port)
@@ -241,21 +337,37 @@ class DnsttVpnService : VpnService() {
             Log.d(TAG, "VPN routing settled")
 
             // In SSH mode, the SOCKS5 proxy is already running (started by MainActivity)
-            // In normal mode, start dnstt-client
+            // In normal mode, start the appropriate tunnel client
             if (!isSshMode) {
-                Log.d(TAG, "Starting dnstt client")
-                if (!startDnsttClient()) {
-                    Log.e(TAG, "Failed to start dnstt-client tunnel")
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        stateCallback?.invoke("error")
+                if (transportType == "slipstream") {
+                    Log.d(TAG, "Starting slipstream client")
+                    if (!startSlipstreamClient()) {
+                        Log.e(TAG, "Failed to start slipstream tunnel")
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            stateCallback?.invoke("error")
+                        }
+                        vpnInterface?.close()
+                        vpnInterface = null
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return
                     }
-                    vpnInterface?.close()
-                    vpnInterface = null
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    return
+                    Log.d(TAG, "slipstream tunnel started successfully")
+                } else {
+                    Log.d(TAG, "Starting dnstt client")
+                    if (!startDnsttClient()) {
+                        Log.e(TAG, "Failed to start dnstt-client tunnel")
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            stateCallback?.invoke("error")
+                        }
+                        vpnInterface?.close()
+                        vpnInterface = null
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return
+                    }
+                    Log.d(TAG, "dnstt-client tunnel started successfully")
                 }
-                Log.d(TAG, "dnstt-client tunnel started successfully")
             } else {
                 Log.d(TAG, "SSH mode - using existing SOCKS5 proxy on port $proxyPort")
             }
@@ -333,31 +445,56 @@ class DnsttVpnService : VpnService() {
         val connectionId = "${ipHeader.sourceIp}:${tcpHeader.sourcePort}-${ipHeader.destinationIp}:${tcpHeader.destinationPort}"
 
         if (tcpHeader.isSYN && !tcpHeader.isACK) {
-            // New connection - SYN packet
-            val socks5Client = Socks5Client(
-                proxyHost,
-                proxyPort,
-                ipHeader.destinationIp.hostAddress ?: return,
-                tcpHeader.destinationPort,
-                socksUsername,
-                socksPassword
-            )
+            // Skip if already being processed or already connected
+            if (tcpConnections.containsKey(connectionId) || !pendingConnections.add(connectionId)) {
+                return
+            }
 
-            val tcpConnection = TcpConnection(
-                sourceIp = ipHeader.sourceIp,
-                sourcePort = tcpHeader.sourcePort,
-                destIp = ipHeader.destinationIp,
-                destPort = tcpHeader.destinationPort,
-                vpnOutput = vpnOutput,
-                socks5Client = socks5Client
-            )
+            val destHostAddress = ipHeader.destinationIp.hostAddress ?: run {
+                pendingConnections.remove(connectionId)
+                return
+            }
+            val clientSeqNum = tcpHeader.sequenceNumber
 
-            if (tcpConnection.handleSyn(tcpHeader.sequenceNumber)) {
-                tcpConnections[connectionId] = tcpConnection
-                Log.d(TAG, "New TCP connection: $connectionId")
-            } else {
-                Log.e(TAG, "Failed to establish connection: $connectionId")
-                // TODO: Send RST
+            // Capture connection parameters for async processing
+            val srcIp = ipHeader.sourceIp
+            val srcPort = tcpHeader.sourcePort
+            val dstIp = ipHeader.destinationIp
+            val dstPort = tcpHeader.destinationPort
+
+            // Process SYN asynchronously to avoid blocking the VPN loop
+            // (Slipstream SOCKS5 handshake goes through the DNS tunnel and is slow)
+            synExecutor.submit {
+                try {
+                    val socks5Client = Socks5Client(
+                        proxyHost,
+                        proxyPort,
+                        destHostAddress,
+                        dstPort,
+                        socksUsername,
+                        socksPassword
+                    )
+
+                    val tcpConnection = TcpConnection(
+                        sourceIp = srcIp,
+                        sourcePort = srcPort,
+                        destIp = dstIp,
+                        destPort = dstPort,
+                        vpnOutput = vpnOutput,
+                        socks5Client = socks5Client
+                    )
+
+                    if (tcpConnection.handleSyn(clientSeqNum)) {
+                        tcpConnections[connectionId] = tcpConnection
+                        Log.d(TAG, "New TCP connection: $connectionId")
+                    } else {
+                        Log.e(TAG, "Failed to establish connection: $connectionId")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing SYN for $connectionId", e)
+                } finally {
+                    pendingConnections.remove(connectionId)
+                }
             }
         } else if (tcpHeader.isFIN) {
             tcpConnections[connectionId]?.handleFin(tcpHeader.sequenceNumber)
@@ -461,6 +598,11 @@ class DnsttVpnService : VpnService() {
         runningThread?.interrupt()
         runningThread = null
 
+        // Cancel pending SYN processing
+        pendingConnections.clear()
+        synExecutor.shutdownNow()
+        synExecutor = Executors.newFixedThreadPool(8)
+
         tcpConnections.values.forEach { it.close() }
         tcpConnections.clear()
 
@@ -471,9 +613,13 @@ class DnsttVpnService : VpnService() {
         }
         vpnInterface = null
 
-        // Stop dnstt-client process (only if not in SSH mode, since SSH mode manages its own)
+        // Stop tunnel client (only if not in SSH mode, since SSH mode manages its own)
         if (!isSshMode) {
-            stopDnsttClient()
+            if (transportType == "slipstream") {
+                stopSlipstreamClient()
+            } else {
+                stopDnsttClient()
+            }
         }
 
         // Release wake lock

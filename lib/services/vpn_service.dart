@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'dnstt_ffi_service.dart';
+import 'slipstream_service.dart';
+import '../models/dnstt_config.dart';
 
 enum VpnState {
   disconnected,
@@ -31,6 +33,10 @@ class VpnService {
 
   // SSH process for desktop
   Process? _sshProcess;
+
+  // Track which transport is active
+  TransportType? _activeTransport;
+  TransportType? get activeTransport => _activeTransport;
 
   String? _connectedDns;
   String? _connectedDomain;
@@ -224,6 +230,7 @@ class VpnService {
     // Ensure mode flags are reset for regular DNSTT mode
     _isProxyMode = false;
     _isSshTunnelMode = false;
+    _activeTransport = TransportType.dnstt;
 
     // Allow UI to update before blocking FFI calls
     await Future.delayed(const Duration(milliseconds: 50));
@@ -273,6 +280,192 @@ class VpnService {
     }
   }
 
+  /// Connect on desktop using Slipstream subprocess
+  Future<bool> _connectDesktopSlipstream({
+    required String dnsServer,
+    required String tunnelDomain,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
+    _activeTransport = TransportType.slipstream;
+
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    try {
+      final slipstream = SlipstreamService.instance;
+      final started = await slipstream.startClient(
+        domain: tunnelDomain,
+        dnsServerAddr: dnsServer,
+        listenPort: proxyPort,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+
+      if (!started) {
+        _lastError = slipstream.lastError ?? 'Failed to start slipstream';
+        _currentState = VpnState.error;
+        _activeTransport = null;
+        _stateController.add(_currentState);
+        return false;
+      }
+
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } catch (e) {
+      _lastError = e.toString();
+      _currentState = VpnState.error;
+      _activeTransport = null;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Connect using Slipstream transport (desktop or mobile)
+  Future<bool> connectSlipstream({
+    required String dnsServer,
+    required String tunnelDomain,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    _currentState = VpnState.connecting;
+    _stateController.add(_currentState);
+    _lastError = null;
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
+    _activeTransport = TransportType.slipstream;
+
+    _connectedDns = dnsServer;
+    _connectedDomain = tunnelDomain;
+
+    if (_isDesktop) {
+      return _connectDesktopSlipstream(
+        dnsServer: dnsServer,
+        tunnelDomain: tunnelDomain,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+    }
+
+    // Android: use method channel
+    if (!_platformSupported) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('connectSlipstream', {
+        'dnsServer': dnsServer,
+        'tunnelDomain': tunnelDomain,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gso': gso,
+      });
+
+      if (result == true) {
+        _currentState = VpnState.connected;
+      } else {
+        _currentState = VpnState.error;
+        _activeTransport = null;
+      }
+      _stateController.add(_currentState);
+      return result ?? false;
+    } on MissingPluginException {
+      _platformSupported = false;
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } on PlatformException catch (e) {
+      print('Slipstream connect error: ${e.message}');
+      _lastError = e.message;
+      _currentState = VpnState.error;
+      _activeTransport = null;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Connect Slipstream in proxy-only mode on Android
+  Future<bool> connectSlipstreamProxy({
+    required String dnsServer,
+    required String tunnelDomain,
+    int proxyPort = 1080,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    if (_isDesktop) {
+      return connectSlipstream(
+        dnsServer: dnsServer,
+        tunnelDomain: tunnelDomain,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+    }
+
+    _currentState = VpnState.connecting;
+    _stateController.add(_currentState);
+    _lastError = null;
+    _isSshTunnelMode = false;
+    _isProxyMode = true;
+    _activeTransport = TransportType.slipstream;
+
+    _connectedDns = dnsServer;
+    _connectedDomain = tunnelDomain;
+
+    if (!_platformSupported) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('connectSlipstreamProxy', {
+        'dnsServer': dnsServer,
+        'tunnelDomain': tunnelDomain,
+        'proxyPort': proxyPort,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gso': gso,
+      });
+
+      if (result == true) {
+        _currentState = VpnState.connected;
+      } else {
+        _currentState = VpnState.error;
+        _isProxyMode = false;
+        _activeTransport = null;
+      }
+      _stateController.add(_currentState);
+      return result ?? false;
+    } on MissingPluginException {
+      _platformSupported = false;
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } on PlatformException catch (e) {
+      print('Slipstream proxy connect error: ${e.message}');
+      _lastError = e.message;
+      _currentState = VpnState.error;
+      _isProxyMode = false;
+      _activeTransport = null;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
   Future<bool> disconnect() async {
     _currentState = VpnState.disconnecting;
     _stateController.add(_currentState);
@@ -310,18 +503,24 @@ class VpnService {
     }
   }
 
-  /// Disconnect on desktop using FFI
+  /// Disconnect on desktop using FFI or Slipstream
   Future<bool> _disconnectDesktop() async {
     try {
-      final ffi = DnsttFfiService.instance;
+      // Stop slipstream if it's running
+      if (SlipstreamService.instance.isRunning) {
+        await SlipstreamService.instance.stopClient();
+      }
 
-      if (ffi.isLoaded) {
+      // Stop DNSTT FFI if it's running
+      final ffi = DnsttFfiService.instance;
+      if (ffi.isLoaded && ffi.isRunning) {
         ffi.stop();
       }
 
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } catch (e) {
@@ -526,6 +725,7 @@ class VpnService {
       _connectedDns = null;
       _connectedDomain = null;
       _isSshTunnelMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } catch (e) {
@@ -872,6 +1072,9 @@ class VpnService {
   Future<bool> isConnected() async {
     if (_isDesktop) {
       try {
+        // Check slipstream first
+        if (SlipstreamService.instance.isRunning) return true;
+        // Then check DNSTT FFI
         final ffi = DnsttFfiService.instance;
         return ffi.isLoaded && ffi.isRunning;
       } catch (e) {
@@ -948,6 +1151,57 @@ class VpnService {
     }
   }
 
+  /// Test a DNS server using Slipstream transport
+  /// Returns latency in milliseconds on success, -1 on failure
+  Future<int> testSlipstreamDnsServer({
+    required String dnsServer,
+    required String tunnelDomain,
+    String testUrl = 'https://api.ipify.org?format=json',
+    int timeoutMs = 15000,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    if (_isDesktop) {
+      // Use subprocess on desktop
+      try {
+        return await SlipstreamService.instance.testServer(
+          domain: tunnelDomain,
+          dnsServerAddr: dnsServer,
+          testUrl: testUrl,
+          timeoutMs: timeoutMs,
+          congestionControl: congestionControl,
+          keepAliveInterval: keepAliveInterval,
+          gso: gso,
+        );
+      } catch (e) {
+        print('Slipstream test error: $e');
+        return -1;
+      }
+    }
+
+    // Use method channel on mobile
+    if (!_platformSupported) return -1;
+
+    try {
+      final result = await _channel.invokeMethod<int>('testSlipstreamDnsServer', {
+        'dnsServer': dnsServer,
+        'tunnelDomain': tunnelDomain,
+        'testUrl': testUrl,
+        'timeoutMs': timeoutMs,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gso': gso,
+      });
+      return result ?? -1;
+    } on MissingPluginException {
+      return -1;
+    } on PlatformException catch (e) {
+      print('Slipstream test error: ${e.message}');
+      return -1;
+    }
+  }
+
   /// Cancel all running DNS tests (Android only)
   Future<void> cancelAllTests() async {
     if (_isDesktop) {
@@ -991,6 +1245,7 @@ class VpnService {
           _sshProcess!.kill();
           _sshProcess = null;
         }
+        SlipstreamService.instance.stopClient();
         DnsttFfiService.instance.stop();
       } catch (_) {}
     }

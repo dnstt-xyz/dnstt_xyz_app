@@ -374,6 +374,26 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: state.activeConfig!.isSlipstream
+                          ? Colors.orange[100]
+                          : Colors.teal[100],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      state.activeConfig!.isSlipstream ? 'Slipstream' : 'DNSTT',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: state.activeConfig!.isSlipstream
+                            ? Colors.orange[700]
+                            : Colors.teal[700],
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ] else
@@ -704,14 +724,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _connect(BuildContext context, AppState state) async {
     final isDesktop = VpnService.isDesktopPlatform;
     final isSshTunnel = state.activeConfig?.tunnelType == TunnelType.ssh;
+    final isSlipstream = state.activeConfig?.isSlipstream ?? false;
     final useProxyMode = isDesktop || (Platform.isAndroid && _connectionMode == ConnectionMode.proxy);
 
     // Determine connection type for permission and messages
     String connectionType;
+    final protocolName = isSlipstream ? 'Slipstream' : 'DNSTT';
     if (isSshTunnel) {
       connectionType = useProxyMode ? 'SSH tunnel (proxy)' : 'SSH tunnel (VPN)';
     } else {
-      connectionType = useProxyMode ? 'SOCKS proxy' : 'VPN';
+      connectionType = useProxyMode ? '$protocolName proxy' : '$protocolName VPN';
     }
 
     // Validate SSH settings if SSH tunnel type
@@ -786,6 +808,27 @@ class _HomeScreenState extends State<HomeScreen> {
         sshPassword: config.sshPassword,
         sshPrivateKey: config.sshPrivateKey,
       );
+    } else if (isSlipstream && useProxyMode) {
+      // Slipstream in proxy mode
+      final config = state.activeConfig!;
+      success = await _vpnService.connectSlipstreamProxy(
+        dnsServer: state.activeDns?.address ?? '8.8.8.8',
+        tunnelDomain: config.tunnelDomain,
+        proxyPort: state.proxyPort,
+        congestionControl: config.congestionControl ?? 'dcubic',
+        keepAliveInterval: config.keepAliveInterval ?? 400,
+        gso: config.gsoEnabled ?? false,
+      );
+    } else if (isSlipstream && !useProxyMode) {
+      // Slipstream in VPN mode (Android)
+      final config = state.activeConfig!;
+      success = await _vpnService.connectSlipstream(
+        dnsServer: state.activeDns?.address ?? '8.8.8.8',
+        tunnelDomain: config.tunnelDomain,
+        congestionControl: config.congestionControl ?? 'dcubic',
+        keepAliveInterval: config.keepAliveInterval ?? 400,
+        gso: config.gsoEnabled ?? false,
+      );
     } else if (useProxyMode) {
       // Proxy-only mode (desktop or Android proxy mode)
       success = await _vpnService.connectProxy(
@@ -812,10 +855,10 @@ class _HomeScreenState extends State<HomeScreen> {
           successMessage = 'SSH tunnel (proxy) started on ${_vpnService.socksProxyAddress}';
         } else if (isSshTunnel && !useProxyMode) {
           successMessage = 'SSH tunnel (VPN) connected';
-        } else if (useProxyMode) {
-          successMessage = 'SOCKS proxy started on ${_vpnService.socksProxyAddress}';
+        } else if (useProxyMode || isDesktop) {
+          successMessage = '$protocolName proxy started on ${_vpnService.socksProxyAddress}';
         } else {
-          successMessage = 'VPN connected';
+          successMessage = '$protocolName VPN connected';
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
