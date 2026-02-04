@@ -212,7 +212,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          choco install strawberryperl pkgconfiglite -y
+          choco install strawberryperl pkgconfiglite ninja -y
           Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
           refreshenv
 
@@ -225,27 +225,13 @@ jobs:
       - name: Pre-build picoquic for slipstream
         shell: bash
         run: |
-          set -x
-          export PATH="/c/mingw64/bin:$PATH"
-          # Use Strawberry Perl's OpenSSL (has dev headers + static libs + .pc files)
+          export PATH="/c/mingw64/bin:/c/ProgramData/chocolatey/bin:$PATH"
           export OPENSSL_ROOT_DIR="/c/Strawberry/c"
           export PKG_CONFIG_PATH="/c/Strawberry/c/lib/pkgconfig"
 
-          # Diagnostics
-          echo "=== Environment ==="
-          which gcc && gcc --version | head -1 || echo "gcc not found"
-          which cmake && cmake --version | head -1 || echo "cmake not found"
-          which ninja && ninja --version || echo "ninja not found"
-          which mingw32-make || echo "mingw32-make not found"
-          which pkg-config || echo "pkg-config not found"
-          ls -la /c/Strawberry/c/include/openssl/ssl.h 2>/dev/null || echo "Strawberry OpenSSL headers not found"
-          ls -la /c/Strawberry/c/lib/libssl* 2>/dev/null || echo "Strawberry OpenSSL libs not found"
-
           cd vendor/slipstream-rust
-          ls vendor/picoquic/CMakeLists.txt 2>/dev/null || { echo "ERROR: picoquic submodule not found"; exit 1; }
 
-          # Build picoquic directly with cmake (skip .sh which fails on Windows)
-          # Use Ninja generator (always available on Windows) with GCC compiler
+          # Build picoquic with cmake + Ninja + GCC (produces .a files)
           cmake -S vendor/picoquic -B .picoquic-build \
             -G Ninja \
             -DCMAKE_C_COMPILER=gcc \
@@ -262,10 +248,6 @@ jobs:
             -Dpicoquic_BUILD_TESTS=OFF
 
           cmake --build .picoquic-build --target picoquic-core
-
-          # Verify build artifacts
-          echo "=== Picoquic build artifacts ==="
-          find .picoquic-build -name "*.a" -o -name "*.lib" | head -20
 
       - name: Build slipstream-client for Windows
         shell: bash
