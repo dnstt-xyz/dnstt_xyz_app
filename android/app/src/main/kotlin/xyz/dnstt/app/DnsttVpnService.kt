@@ -15,11 +15,20 @@ import androidx.core.app.NotificationCompat
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-import java.net.DatagramPacket
-import java.net.DatagramSocket
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.Socket
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import mobile.Mobile
 
 class DnsttVpnService : VpnService() {
@@ -65,6 +74,66 @@ class DnsttVpnService : VpnService() {
 
     // Go-based dnstt client from gomobile library
     private var dnsttClient: mobile.DnsttClient? = null
+
+    // Thread pool for TCP SYN handshakes (async so VPN loop isn't blocked)
+    private var tcpExecutor: ExecutorService? = null
+
+    // Thread pool for DNS queries with a small bounded queue.
+    // Excess DNS queries are dropped — Android will retry them.
+    private var dnsExecutor: ExecutorService? = null
+
+    // Pool of persistent SOCKS5 connections for DNS-over-TCP queries
+    private val dnsConnPool = ConcurrentLinkedDeque<DnsTunnelConnection>()
+    private val DNS_POOL_MAX = 4
+    private val DNS_CONN_IDLE_MS = 30_000L
+
+    /**
+     * A persistent SOCKS5 connection to a DNS server through the dnstt tunnel.
+     * Reused across multiple DNS queries to avoid per-query handshake overhead.
+     */
+    private inner class DnsTunnelConnection(val targetServer: String) {
+        var socket: Socket? = null
+        var input: InputStream? = null
+        var output: OutputStream? = null
+        var createdAt: Long = System.currentTimeMillis()
+        var lastUsed: Long = System.currentTimeMillis()
+
+        fun isValid(): Boolean {
+            val s = socket ?: return false
+            return !s.isClosed && s.isConnected &&
+                    (System.currentTimeMillis() - lastUsed) < DNS_CONN_IDLE_MS
+        }
+
+        /** Send a DNS query and read the response over the existing TCP connection. */
+        fun query(dnsQuery: ByteArray): ByteArray? {
+            val out = output ?: return null
+            val inp = input ?: return null
+
+            // Send: 2-byte length prefix + DNS payload (RFC 1035 §4.2.2)
+            val req = ByteArray(2 + dnsQuery.size)
+            req[0] = ((dnsQuery.size shr 8) and 0xFF).toByte()
+            req[1] = (dnsQuery.size and 0xFF).toByte()
+            System.arraycopy(dnsQuery, 0, req, 2, dnsQuery.size)
+            out.write(req)
+            out.flush()
+
+            // Read: 2-byte length prefix + DNS response
+            val lenBuf = ByteArray(2)
+            readFully(inp, lenBuf)
+            val len = ((lenBuf[0].toInt() and 0xFF) shl 8) or (lenBuf[1].toInt() and 0xFF)
+            if (len <= 0 || len > 65535) return null
+
+            val resp = ByteArray(len)
+            readFully(inp, resp)
+            lastUsed = System.currentTimeMillis()
+            return resp
+        }
+
+        fun close() {
+            try { socket?.close() } catch (_: Exception) {}
+            socket = null; input = null; output = null
+        }
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
@@ -209,6 +278,17 @@ class DnsttVpnService : VpnService() {
             // Acquire wake lock to prevent CPU from sleeping
             acquireWakeLock()
 
+            // TCP: up to 8 concurrent SYN handshakes through the tunnel
+            tcpExecutor = Executors.newFixedThreadPool(8)
+
+            // DNS: 2 threads, queue max 4. Excess queries are silently dropped
+            // (Android retries DNS automatically). This prevents DNS from starving TCP.
+            dnsExecutor = ThreadPoolExecutor(
+                2, 2, 0L, TimeUnit.MILLISECONDS,
+                LinkedBlockingQueue<Runnable>(4),
+                ThreadPoolExecutor.DiscardOldestPolicy()
+            )
+
             // IMPORTANT: Establish VPN interface FIRST with app exclusion
             // This ensures dnstt client's sockets bypass the VPN
             val builder = Builder()
@@ -333,31 +413,40 @@ class DnsttVpnService : VpnService() {
         val connectionId = "${ipHeader.sourceIp}:${tcpHeader.sourcePort}-${ipHeader.destinationIp}:${tcpHeader.destinationPort}"
 
         if (tcpHeader.isSYN && !tcpHeader.isACK) {
-            // New connection - SYN packet
-            val socks5Client = Socks5Client(
-                proxyHost,
-                proxyPort,
-                ipHeader.destinationIp.hostAddress ?: return,
-                tcpHeader.destinationPort,
-                socksUsername,
-                socksPassword
-            )
+            // Handle SYN in a separate thread so the VPN loop isn't blocked
+            // while waiting for the SOCKS5 handshake through the slow tunnel
+            val destHost = ipHeader.destinationIp.hostAddress ?: return
+            val destPort = tcpHeader.destinationPort
+            val seqNum = tcpHeader.sequenceNumber
+            val srcIp = ipHeader.sourceIp
+            val srcPort = tcpHeader.sourcePort
+            val destIp = ipHeader.destinationIp
 
-            val tcpConnection = TcpConnection(
-                sourceIp = ipHeader.sourceIp,
-                sourcePort = tcpHeader.sourcePort,
-                destIp = ipHeader.destinationIp,
-                destPort = tcpHeader.destinationPort,
-                vpnOutput = vpnOutput,
-                socks5Client = socks5Client
-            )
+            tcpExecutor?.submit {
+                val socks5Client = Socks5Client(
+                    proxyHost,
+                    proxyPort,
+                    destHost,
+                    destPort,
+                    socksUsername,
+                    socksPassword
+                )
 
-            if (tcpConnection.handleSyn(tcpHeader.sequenceNumber)) {
-                tcpConnections[connectionId] = tcpConnection
-                Log.d(TAG, "New TCP connection: $connectionId")
-            } else {
-                Log.e(TAG, "Failed to establish connection: $connectionId")
-                // TODO: Send RST
+                val tcpConnection = TcpConnection(
+                    sourceIp = srcIp,
+                    sourcePort = srcPort,
+                    destIp = destIp,
+                    destPort = destPort,
+                    vpnOutput = vpnOutput,
+                    socks5Client = socks5Client
+                )
+
+                if (tcpConnection.handleSyn(seqNum)) {
+                    tcpConnections[connectionId] = tcpConnection
+                    Log.d(TAG, "New TCP connection: $connectionId")
+                } else {
+                    Log.e(TAG, "Failed to establish connection: $connectionId")
+                }
             }
         } else if (tcpHeader.isFIN) {
             tcpConnections[connectionId]?.handleFin(tcpHeader.sequenceNumber)
@@ -387,46 +476,34 @@ class DnsttVpnService : VpnService() {
 
         Log.d(TAG, "DNS query from ${ipHeader.sourceIp}:${udpHeader.sourcePort} to ${ipHeader.destinationIp}:53")
 
-        // Forward DNS query to the actual DNS server
-        Thread {
+        // Forward DNS query through the SOCKS5 tunnel using DNS-over-TCP
+        // This prevents DNS leakage by routing queries through the dnstt tunnel
+        dnsExecutor?.submit {
             try {
-                // Create a protected UDP socket to bypass VPN
-                val dnsSocket = DatagramSocket()
-                protect(dnsSocket)
+                // Always resolve through the configured DNS server, not the packet's
+                // destination IP — the destination may be a local/private DNS (e.g.
+                // emulator's 10.0.2.3) that isn't reachable through the tunnel.
+                val dnsResponse = resolveDnsThroughTunnel(udpHeader.payload, dnsServer)
+                if (dnsResponse == null) {
+                    Log.e(TAG, "DNS resolution through tunnel failed")
+                    return@submit
+                }
 
-                // Send DNS query to DNS server
-                val dnsServerAddr = InetAddress.getByName(dnsServer)
-                val queryPacket = DatagramPacket(
-                    udpHeader.payload,
-                    udpHeader.payload.size,
-                    dnsServerAddr,
-                    53
-                )
-                dnsSocket.soTimeout = 5000 // 5 second timeout
-                dnsSocket.send(queryPacket)
+                Log.d(TAG, "DNS response received via tunnel: ${dnsResponse.size} bytes")
 
-                // Receive DNS response
-                val responseBuffer = ByteArray(4096)
-                val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-                dnsSocket.receive(responsePacket)
-                dnsSocket.close()
-
-                val responseData = responseBuffer.copyOf(responsePacket.length)
-                Log.d(TAG, "DNS response received: ${responsePacket.length} bytes")
-
-                // Build response packet
+                // Build UDP response packet to inject back into TUN
                 val responseUdp = UDPHeader(
                     sourcePort = 53,
                     destinationPort = udpHeader.sourcePort,
-                    length = 8 + responseData.size,
+                    length = 8 + dnsResponse.size,
                     checksum = 0,
-                    payload = responseData
+                    payload = dnsResponse
                 )
 
                 val responseIp = IPv4Header(
                     version = 4,
                     ihl = 5,
-                    totalLength = 20 + 8 + responseData.size,
+                    totalLength = 20 + 8 + dnsResponse.size,
                     identification = ipHeader.identification + 1,
                     flags = 0,
                     fragmentOffset = 0,
@@ -443,12 +520,191 @@ class DnsttVpnService : VpnService() {
                     vpnOutput.write(fullPacket)
                     vpnOutput.flush()
                 }
-                Log.d(TAG, "DNS response sent back to client")
+                Log.d(TAG, "DNS response sent back to client via tunnel")
 
             } catch (e: Exception) {
-                Log.e(TAG, "DNS forwarding failed", e)
+                Log.e(TAG, "DNS forwarding through tunnel failed", e)
             }
-        }.start()
+        }
+    }
+
+    /**
+     * Resolves a DNS query using a pooled SOCKS5 connection through the dnstt tunnel.
+     * Reuses persistent connections to avoid per-query SOCKS5 handshake overhead.
+     * If a pooled connection fails, retries once with a fresh connection.
+     */
+    private fun resolveDnsThroughTunnel(dnsQuery: ByteArray, targetDnsServer: String): ByteArray? {
+        // First attempt: try a pooled connection
+        val pooled = acquireDnsConnection(targetDnsServer)
+        if (pooled != null) {
+            try {
+                val result = pooled.query(dnsQuery)
+                if (result != null) {
+                    releaseDnsConnection(pooled)
+                    return result
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Pooled DNS connection stale, retrying with fresh connection")
+            }
+            pooled.close()
+        }
+
+        // Second attempt: fresh connection
+        val fresh = createDnsConnection(targetDnsServer) ?: return null
+        try {
+            val result = fresh.query(dnsQuery)
+            if (result != null) {
+                releaseDnsConnection(fresh)
+            } else {
+                fresh.close()
+            }
+            return result
+        } catch (e: Exception) {
+            Log.e(TAG, "DNS query failed on fresh connection", e)
+            fresh.close()
+            return null
+        }
+    }
+
+    /** Get a connection from the pool or create a new one. */
+    private fun acquireDnsConnection(targetDnsServer: String): DnsTunnelConnection? {
+        // Try to reuse an existing valid connection to the same server
+        while (true) {
+            val conn = dnsConnPool.pollFirst() ?: break
+            if (conn.isValid() && conn.targetServer == targetDnsServer) {
+                return conn
+            }
+            conn.close()
+        }
+        // Create a new connection
+        return createDnsConnection(targetDnsServer)
+    }
+
+    /** Return a connection to the pool for reuse. */
+    private fun releaseDnsConnection(conn: DnsTunnelConnection) {
+        if (!shouldRun.get() || dnsConnPool.size >= DNS_POOL_MAX || !conn.isValid()) {
+            conn.close()
+            return
+        }
+        dnsConnPool.offerFirst(conn)
+    }
+
+    /** Close all pooled DNS connections. */
+    private fun drainDnsPool() {
+        while (true) {
+            val conn = dnsConnPool.pollFirst() ?: break
+            conn.close()
+        }
+    }
+
+    /**
+     * Create a new SOCKS5 connection through the dnstt tunnel to a DNS server.
+     * Performs the full SOCKS5 handshake + CONNECT once; the returned connection
+     * can then be used for multiple DNS-over-TCP queries.
+     */
+    private fun createDnsConnection(targetDnsServer: String): DnsTunnelConnection? {
+        try {
+            val socket = Socket()
+            socket.connect(InetSocketAddress(proxyHost, proxyPort), 10000)
+            socket.soTimeout = 10000
+            socket.tcpNoDelay = true
+
+            val input = socket.getInputStream()
+            val output = socket.getOutputStream()
+
+            // --- SOCKS5 handshake ---
+            val requiresAuth = !socksUsername.isNullOrEmpty() && !socksPassword.isNullOrEmpty()
+            val greeting = if (requiresAuth) {
+                byteArrayOf(0x05, 2, 0x00, 0x02)
+            } else {
+                byteArrayOf(0x05, 1, 0x00)
+            }
+            output.write(greeting)
+            output.flush()
+
+            val greetingResponse = ByteArray(2)
+            readFully(input, greetingResponse)
+            if (greetingResponse[0] != 0x05.toByte()) {
+                Log.e(TAG, "Invalid SOCKS5 greeting for DNS pool connection")
+                socket.close()
+                return null
+            }
+
+            when (greetingResponse[1].toInt() and 0xFF) {
+                0x00 -> { /* No auth needed */ }
+                0x02 -> {
+                    if (!requiresAuth) {
+                        Log.e(TAG, "SOCKS5 requires auth but no credentials for DNS pool")
+                        socket.close()
+                        return null
+                    }
+                    val usernameBytes = socksUsername!!.toByteArray()
+                    val passwordBytes = socksPassword!!.toByteArray()
+                    val authReq = ByteArray(3 + usernameBytes.size + passwordBytes.size)
+                    authReq[0] = 0x01
+                    authReq[1] = usernameBytes.size.toByte()
+                    System.arraycopy(usernameBytes, 0, authReq, 2, usernameBytes.size)
+                    authReq[2 + usernameBytes.size] = passwordBytes.size.toByte()
+                    System.arraycopy(passwordBytes, 0, authReq, 3 + usernameBytes.size, passwordBytes.size)
+                    output.write(authReq)
+                    output.flush()
+
+                    val authResp = ByteArray(2)
+                    readFully(input, authResp)
+                    if (authResp[1] != 0x00.toByte()) {
+                        Log.e(TAG, "SOCKS5 auth failed for DNS pool connection")
+                        socket.close()
+                        return null
+                    }
+                }
+                else -> {
+                    Log.e(TAG, "Unsupported SOCKS5 auth method for DNS pool")
+                    socket.close()
+                    return null
+                }
+            }
+
+            // --- SOCKS5 CONNECT to target DNS server on port 53 ---
+            val dnsServerAddr = InetAddress.getByName(targetDnsServer)
+            val ipBytes = dnsServerAddr.address
+            val connectReq = byteArrayOf(
+                0x05, 0x01, 0x00,   // VER, CMD=CONNECT, RSV
+                0x01,               // ATYP=IPv4
+                ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3],
+                0x00, 0x35          // Port 53
+            )
+            output.write(connectReq)
+            output.flush()
+
+            val connectResp = ByteArray(10)
+            readFully(input, connectResp)
+            if (connectResp[0] != 0x05.toByte() || connectResp[1] != 0x00.toByte()) {
+                Log.e(TAG, "SOCKS5 CONNECT to DNS server failed: status=${connectResp[1]}")
+                socket.close()
+                return null
+            }
+
+            Log.d(TAG, "DNS pool: new connection to $targetDnsServer established")
+            val conn = DnsTunnelConnection(targetDnsServer)
+            conn.socket = socket
+            conn.input = input
+            conn.output = output
+            return conn
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create DNS pool connection", e)
+            return null
+        }
+    }
+
+    /** Reads exactly buffer.size bytes from the stream, or throws IOException. */
+    private fun readFully(input: InputStream, buffer: ByteArray) {
+        var offset = 0
+        while (offset < buffer.size) {
+            val bytesRead = input.read(buffer, offset, buffer.size - offset)
+            if (bytesRead == -1) throw IOException("Unexpected end of stream reading DNS response")
+            offset += bytesRead
+        }
     }
 
     private fun disconnect() {
@@ -461,8 +717,15 @@ class DnsttVpnService : VpnService() {
         runningThread?.interrupt()
         runningThread = null
 
+        tcpExecutor?.shutdownNow()
+        tcpExecutor = null
+        dnsExecutor?.shutdownNow()
+        dnsExecutor = null
+
         tcpConnections.values.forEach { it.close() }
         tcpConnections.clear()
+
+        drainDnsPool()
 
         try {
             vpnInterface?.close()
