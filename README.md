@@ -157,6 +157,13 @@ dnstt_xyz_app/
 └── scripts/          # Build scripts (DNSTT + Slipstream)
 ```
 
+## Server Setup
+
+You need a running tunnel server before using this app.
+
+- **DNSTT server**: [dnstt-deploy](https://github.com/bugfloyd/dnstt-deploy) — automated deployment scripts for dnstt server
+- **Slipstream server**: [slipstream-socks-deploy](https://github.com/dnstt-xyz/slipstream-socks-deploy) — automated deployment scripts for Slipstream server
+
 ## Configuration
 
 The app requires:
