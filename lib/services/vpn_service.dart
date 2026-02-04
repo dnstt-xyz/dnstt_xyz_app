@@ -91,15 +91,22 @@ class VpnService {
   bool _isSshTunnelMode = false;
   bool get isSshTunnelMode => _isSshTunnelMode;
 
+  // Slipstream mode (QUIC-over-DNS tunnel)
+  bool _isSlipstreamMode = false;
+  bool get isSlipstreamMode => _isSlipstreamMode;
+
   VpnState _parseState(dynamic state) {
     switch (state) {
       case 'disconnected':
       case 'proxy_disconnected':
       case 'ssh_tunnel_disconnected':
+      case 'slipstream_disconnected':
         _isProxyMode = false;
         _isSshTunnelMode = false;
+        _isSlipstreamMode = false;
         return VpnState.disconnected;
       case 'connecting':
+      case 'slipstream_connecting':
         return VpnState.connecting;
       case 'connected':
         return VpnState.connected;
@@ -109,12 +116,17 @@ class VpnService {
       case 'ssh_tunnel_connected':
         _isSshTunnelMode = true;
         return VpnState.connected;
+      case 'slipstream_connected':
+        _isSlipstreamMode = true;
+        return VpnState.connected;
       case 'disconnecting':
+      case 'slipstream_disconnecting':
         return VpnState.disconnecting;
       case 'error':
       case 'invalid':
       case 'proxy_error':
       case 'ssh_tunnel_error':
+      case 'slipstream_error':
         return VpnState.error;
       default:
         return VpnState.disconnected;
@@ -147,13 +159,14 @@ class VpnService {
     String? dnsServer,
     String? tunnelDomain,
     String? publicKey,
+    bool sshMode = false,
   }) async {
     _currentState = VpnState.connecting;
     _stateController.add(_currentState);
     _lastError = null;
     // Reset all mode flags for regular VPN mode
     _isProxyMode = false;
-    _isSshTunnelMode = false;
+    _isSshTunnelMode = sshMode;
 
     _connectedDns = dnsServer;
     _connectedDomain = tunnelDomain;
@@ -188,6 +201,7 @@ class VpnService {
               'dnsServer': dnsServer ?? '8.8.8.8',
               'tunnelDomain': tunnelDomain ?? '',
               'publicKey': publicKey ?? '',
+              'sshMode': sshMode,
             };
 
       final result = await _channel.invokeMethod<bool>('connect', params);
@@ -864,6 +878,131 @@ class VpnService {
       return result ?? false;
     } on MissingPluginException {
       return _currentState == VpnState.connected && _isSshTunnelMode;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Connect using Slipstream (QUIC-over-DNS tunnel)
+  /// Android only - provides a TCP proxy on the specified port
+  Future<bool> connectSlipstream({
+    String? dnsServer,
+    String? tunnelDomain,
+    int proxyPort = 7000,
+    bool authoritative = false,
+  }) async {
+    if (_isDesktop) {
+      // Slipstream not yet supported on desktop
+      _lastError = 'Slipstream is only supported on Android';
+      return false;
+    }
+
+    _currentState = VpnState.connecting;
+    _stateController.add(_currentState);
+    _lastError = null;
+    // Reset all mode flags and set slipstream mode
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
+    _isSlipstreamMode = true;
+
+    _connectedDns = dnsServer;
+    _connectedDomain = tunnelDomain;
+
+    if (!_platformSupported) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('connectSlipstream', {
+        'dnsServer': dnsServer ?? '8.8.8.8',
+        'tunnelDomain': tunnelDomain ?? '',
+        'proxyPort': proxyPort,
+        'authoritative': authoritative,
+      });
+
+      if (result == true) {
+        _currentState = VpnState.connected;
+      } else {
+        _currentState = VpnState.error;
+        _isSlipstreamMode = false;
+      }
+      _stateController.add(_currentState);
+      return result ?? false;
+    } on MissingPluginException {
+      _platformSupported = false;
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } on PlatformException catch (e) {
+      print('Slipstream connect error: ${e.message}');
+      _lastError = e.message;
+      _currentState = VpnState.error;
+      _isSlipstreamMode = false;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Disconnect Slipstream tunnel
+  Future<bool> disconnectSlipstream() async {
+    if (_isDesktop) {
+      return true; // No-op on desktop
+    }
+
+    _currentState = VpnState.disconnecting;
+    _stateController.add(_currentState);
+
+    if (!_platformSupported) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      _currentState = VpnState.disconnected;
+      _connectedDns = null;
+      _connectedDomain = null;
+      _isSlipstreamMode = false;
+      _stateController.add(_currentState);
+      return true;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('disconnectSlipstream');
+      _currentState = VpnState.disconnected;
+      _connectedDns = null;
+      _connectedDomain = null;
+      _isSlipstreamMode = false;
+      _stateController.add(_currentState);
+      return result ?? true;
+    } on MissingPluginException {
+      _platformSupported = false;
+      _currentState = VpnState.disconnected;
+      _isSlipstreamMode = false;
+      _stateController.add(_currentState);
+      return true;
+    } on PlatformException catch (e) {
+      print('Slipstream disconnect error: ${e.message}');
+      _currentState = VpnState.error;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Check if Slipstream is running
+  Future<bool> isSlipstreamConnected() async {
+    if (_isDesktop) {
+      return false; // Not supported on desktop
+    }
+
+    if (!_platformSupported) {
+      return _currentState == VpnState.connected && _isSlipstreamMode;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('isSlipstreamConnected');
+      return result ?? false;
+    } on MissingPluginException {
+      return _currentState == VpnState.connected && _isSlipstreamMode;
     } on PlatformException {
       return false;
     }

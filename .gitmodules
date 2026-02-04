@@ -1,0 +1,3 @@
+[submodule "slipstream-plugin-android"]
+	path = slipstream-plugin-android
+	url = https://github.com/Mygod/slipstream-plugin-android.git

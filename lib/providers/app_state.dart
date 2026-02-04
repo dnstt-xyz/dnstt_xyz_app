@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import '../models/dns_server.dart';
 import '../models/dnstt_config.dart';
+import '../models/slipstream_config.dart';
 import '../services/storage_service.dart';
 import '../services/dnstt_service.dart';
 import '../services/vpn_service.dart';
@@ -11,7 +12,9 @@ class AppState extends ChangeNotifier {
   StorageService? _storage;
   List<DnsServer> _dnsServers = [];
   List<DnsttConfig> _dnsttConfigs = [];
+  List<SlipstreamConfig> _slipstreamConfigs = [];
   DnsttConfig? _activeConfig;
+  SlipstreamConfig? _activeSlipstreamConfig;
   DnsServer? _activeDns;
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   String? _connectionError;
@@ -27,7 +30,9 @@ class AppState extends ChangeNotifier {
 
   List<DnsServer> get dnsServers => _dnsServers;
   List<DnsttConfig> get dnsttConfigs => _dnsttConfigs;
+  List<SlipstreamConfig> get slipstreamConfigs => _slipstreamConfigs;
   DnsttConfig? get activeConfig => _activeConfig;
+  SlipstreamConfig? get activeSlipstreamConfig => _activeSlipstreamConfig;
   DnsServer? get activeDns => _activeDns;
   ConnectionStatus get connectionStatus => _connectionStatus;
   String? get connectionError => _connectionError;
@@ -51,11 +56,19 @@ class AppState extends ChangeNotifier {
   Future<void> _loadData() async {
     _dnsServers = await _storage!.getDnsServers();
     _dnsttConfigs = await _storage!.getDnsttConfigs();
+    _slipstreamConfigs = await _storage!.getSlipstreamConfigs();
 
     final activeConfigId = await _storage!.getActiveConfigId();
     if (activeConfigId != null) {
       _activeConfig = _dnsttConfigs
           .where((c) => c.id == activeConfigId)
+          .firstOrNull;
+    }
+
+    final activeSlipstreamConfigId = await _storage!.getActiveSlipstreamConfigId();
+    if (activeSlipstreamConfigId != null) {
+      _activeSlipstreamConfig = _slipstreamConfigs
+          .where((c) => c.id == activeSlipstreamConfigId)
           .firstOrNull;
     }
 
@@ -213,6 +226,38 @@ class AppState extends ChangeNotifier {
       _activeConfig = null;
       await _storage!.setActiveConfigId(null);
     }
+    notifyListeners();
+  }
+
+  // Slipstream Config Management
+  Future<void> addSlipstreamConfig(SlipstreamConfig config) async {
+    await _storage!.addSlipstreamConfig(config);
+    _slipstreamConfigs = await _storage!.getSlipstreamConfigs();
+    notifyListeners();
+  }
+
+  Future<void> updateSlipstreamConfig(SlipstreamConfig config) async {
+    await _storage!.updateSlipstreamConfig(config);
+    _slipstreamConfigs = await _storage!.getSlipstreamConfigs();
+    if (_activeSlipstreamConfig?.id == config.id) {
+      _activeSlipstreamConfig = config;
+    }
+    notifyListeners();
+  }
+
+  Future<void> removeSlipstreamConfig(String id) async {
+    await _storage!.removeSlipstreamConfig(id);
+    _slipstreamConfigs = await _storage!.getSlipstreamConfigs();
+    if (_activeSlipstreamConfig?.id == id) {
+      _activeSlipstreamConfig = null;
+      await _storage!.setActiveSlipstreamConfigId(null);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setActiveSlipstreamConfig(SlipstreamConfig? config) async {
+    _activeSlipstreamConfig = config;
+    await _storage!.setActiveSlipstreamConfigId(config?.id);
     notifyListeners();
   }
 

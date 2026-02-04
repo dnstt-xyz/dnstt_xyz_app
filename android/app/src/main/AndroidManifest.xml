@@ -54,6 +54,15 @@
                 android:value="proxy_tunnel"/>
         </service>
 
+        <service
+            android:name=".SlipstreamProxyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="proxy_tunnel"/>
+        </service>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
