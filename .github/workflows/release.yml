@@ -208,8 +208,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install CMake and Perl
-        run: choco install cmake strawberryperl -y
+      - name: Install Perl (needed for OpenSSL vendored build)
+        run: |
+          choco install strawberryperl -y
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build Go library for Windows
         run: |
@@ -218,12 +224,15 @@ jobs:
           go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dnstt.dll ./desktop
 
       - name: Build slipstream-client for Windows
+        shell: cmd
         run: |
-          cd vendor/slipstream-rust
-          $env:RUSTFLAGS="--remap-path-prefix=$(Get-Location)=/build/s"
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd vendor\slipstream-rust
+          set RUSTFLAGS=--remap-path-prefix=%CD%=/build/s
+          set CC=cl.exe
           cargo build -p slipstream-client --release --features openssl-vendored
-          New-Item -ItemType Directory -Force -Path ../../windows/runner/tools
-          Copy-Item target/release/slipstream-client.exe ../../windows/runner/tools/
+          if not exist ..\..\windows\runner\tools mkdir ..\..\windows\runner\tools
+          copy target\release\slipstream-client.exe ..\..\windows\runner\tools\
 
       - name: Get dependencies
         run: flutter pub get
