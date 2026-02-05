@@ -137,3 +137,14 @@ if(EXISTS "${DNSTT_SO}")
 else()
   message(WARNING "DNSTT library not found at ${DNSTT_SO} - run 'scripts/build_linux.sh' to build it")
 endif()
+
+# === Slipstream Client ===
+# Copy slipstream-client if it exists in linux/tools
+set(SLIPSTREAM_BIN "${CMAKE_CURRENT_SOURCE_DIR}/tools/slipstream-client")
+if(EXISTS "${SLIPSTREAM_BIN}")
+  install(PROGRAMS "${SLIPSTREAM_BIN}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+  message(STATUS "Slipstream client found: ${SLIPSTREAM_BIN}")
+else()
+  message(STATUS "Slipstream client not found at ${SLIPSTREAM_BIN} (optional)")
+endif()

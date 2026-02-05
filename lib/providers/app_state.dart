@@ -277,7 +277,8 @@ class AppState extends ChangeNotifier {
           );
         }
       } else {
-        // For DNSTT SOCKS5: use the batch testing method
+        // Use the batch testing method (works for both DNSTT and Slipstream)
+        final transportType = _activeConfig?.transportType ?? TransportType.dnstt;
         await DnsttService.testMultipleDnsServersAll(
           servers,
           tunnelDomain: tunnelDomain,
@@ -286,6 +287,10 @@ class AppState extends ChangeNotifier {
           concurrency: 3,
           timeout: const Duration(seconds: 15),
           shouldCancel: () => _cancelTestingRequested,
+          transportType: transportType,
+          congestionControl: _activeConfig?.congestionControl ?? 'dcubic',
+          keepAliveInterval: _activeConfig?.keepAliveInterval ?? 400,
+          gso: _activeConfig?.gsoEnabled ?? false,
           onResult: (result) async {
             if (result.message == 'Cancelled') {
               _testingProgress++;
@@ -363,6 +368,7 @@ class AppState extends ChangeNotifier {
     if (_activeConfig == null) return true; // No config, basic DNS test
     // SSH tunnel testing not supported yet
     if (_activeConfig!.tunnelType == TunnelType.ssh) return false;
+    // Slipstream testing is supported on all platforms
     return true;
   }
 
@@ -395,13 +401,18 @@ class AppState extends ChangeNotifier {
       final tunnelDomain = _activeConfig?.tunnelDomain;
       final publicKey = _activeConfig?.publicKey;
 
-      // For DNSTT SOCKS5: full tunnel test with publicKey
+      // Full tunnel test (works for both DNSTT and Slipstream)
+      final transportType = _activeConfig?.transportType ?? TransportType.dnstt;
       final result = await DnsttService.testDnsServer(
         server,
         tunnelDomain: tunnelDomain,
         publicKey: publicKey,
         testUrl: _testUrl,
         timeout: const Duration(seconds: 15),
+        transportType: transportType,
+        congestionControl: _activeConfig?.congestionControl ?? 'dcubic',
+        keepAliveInterval: _activeConfig?.keepAliveInterval ?? 400,
+        gso: _activeConfig?.gsoEnabled ?? false,
       );
 
       await updateDnsServerStatus(

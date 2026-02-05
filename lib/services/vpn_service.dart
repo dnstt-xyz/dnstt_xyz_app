@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'dnstt_ffi_service.dart';
+import 'slipstream_service.dart';
+import '../models/dnstt_config.dart';
 
 enum VpnState {
   disconnected,
@@ -31,6 +33,10 @@ class VpnService {
 
   // SSH process for desktop
   Process? _sshProcess;
+
+  // Track which transport is active
+  TransportType? _activeTransport;
+  TransportType? get activeTransport => _activeTransport;
 
   String? _connectedDns;
   String? _connectedDomain;
@@ -215,6 +221,135 @@ class VpnService {
     }
   }
 
+  /// Verify the tunnel connection by making an HTTP request through the SOCKS5 proxy.
+  /// Returns true if the tunnel is working, false otherwise.
+  Future<bool> _verifyTunnelConnection({int timeoutMs = 10000}) async {
+    try {
+      print('Verifying tunnel connection via HTTP request through SOCKS5...');
+
+      final socket = await Socket.connect(
+        '127.0.0.1',
+        proxyPort,
+        timeout: Duration(milliseconds: 5000),
+      );
+      socket.setOption(SocketOption.tcpNoDelay, true);
+
+      final allBytes = <int>[];
+      final completer = Completer<void>();
+      var done = false;
+
+      socket.listen(
+        (data) {
+          allBytes.addAll(data);
+        },
+        onDone: () {
+          done = true;
+          if (!completer.isCompleted) completer.complete();
+        },
+        onError: (e) {
+          if (!completer.isCompleted) completer.completeError(e);
+        },
+      );
+
+      // Helper to wait for N bytes in allBytes
+      Future<List<int>> readBytes(int count) async {
+        final deadline = DateTime.now().add(Duration(milliseconds: timeoutMs));
+        while (allBytes.length < count) {
+          if (done) return allBytes;
+          if (DateTime.now().isAfter(deadline)) {
+            throw TimeoutException('Timeout waiting for $count bytes');
+          }
+          await Future.delayed(const Duration(milliseconds: 10));
+        }
+        return allBytes.sublist(0, count);
+      }
+
+      // SOCKS5 handshake - greeting (no auth)
+      socket.add([0x05, 0x01, 0x00]);
+      await socket.flush();
+
+      // Read server greeting response (2 bytes)
+      final authResponse = await readBytes(2);
+      if (authResponse.length < 2 || authResponse[0] != 0x05 || authResponse[1] != 0x00) {
+        socket.destroy();
+        print('SOCKS5 auth failed');
+        return false;
+      }
+      allBytes.removeRange(0, 2);
+
+      // SOCKS5 connect request to api.ipify.org:80
+      const targetHost = 'api.ipify.org';
+      const targetPort = 80;
+      final connectRequest = <int>[
+        0x05, 0x01, 0x00, 0x03,
+        targetHost.length,
+        ...targetHost.codeUnits,
+        (targetPort >> 8) & 0xFF,
+        targetPort & 0xFF,
+      ];
+      socket.add(connectRequest);
+      await socket.flush();
+
+      // Read SOCKS5 connect response header (4 bytes minimum)
+      final connectHeader = await readBytes(4);
+      if (connectHeader.length < 4 || connectHeader[1] != 0x00) {
+        socket.destroy();
+        print('SOCKS5 connect failed');
+        return false;
+      }
+
+      // Determine how many more bytes to read based on address type
+      final addrType = connectHeader[3];
+      allBytes.removeRange(0, 4);
+
+      int extraBytes;
+      if (addrType == 0x01) {
+        extraBytes = 6; // IPv4 (4) + port (2)
+      } else if (addrType == 0x04) {
+        extraBytes = 18; // IPv6 (16) + port (2)
+      } else if (addrType == 0x03) {
+        // Domain: first byte is length
+        final lenData = await readBytes(1);
+        final domainLen = lenData[0];
+        allBytes.removeRange(0, 1);
+        extraBytes = domainLen + 2; // domain + port (2)
+      } else {
+        extraBytes = 6; // Fallback
+      }
+
+      await readBytes(extraBytes);
+      allBytes.removeRange(0, extraBytes);
+
+      // Send HTTP request
+      const httpRequest = 'GET /?format=text HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n';
+      socket.add(httpRequest.codeUnits);
+      await socket.flush();
+
+      // Wait for HTTP response (at least enough to see status line)
+      final deadline = DateTime.now().add(Duration(milliseconds: timeoutMs));
+      while (allBytes.length < 12 && !done) {
+        if (DateTime.now().isAfter(deadline)) break;
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+
+      socket.destroy();
+
+      if (allBytes.isNotEmpty) {
+        final response = String.fromCharCodes(allBytes);
+        if (response.contains('200 OK') || response.contains('200')) {
+          print('Tunnel verification SUCCESS');
+          return true;
+        }
+      }
+
+      print('Tunnel verification failed - no 200 OK in response');
+      return false;
+    } catch (e) {
+      print('Tunnel verification error: $e');
+      return false;
+    }
+  }
+
   /// Connect on desktop using FFI
   Future<bool> _connectDesktop({
     required String dnsServer,
@@ -224,6 +359,7 @@ class VpnService {
     // Ensure mode flags are reset for regular DNSTT mode
     _isProxyMode = false;
     _isSshTunnelMode = false;
+    _activeTransport = TransportType.dnstt;
 
     // Allow UI to update before blocking FFI calls
     await Future.delayed(const Duration(milliseconds: 50));
@@ -262,12 +398,230 @@ class VpnService {
         return false;
       }
 
+      // Wait for proxy to be ready
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Verify tunnel actually works (20s for DNS tunnel)
+      print('Verifying DNSTT tunnel connectivity...');
+      if (!await _verifyTunnelConnection(timeoutMs: 20000)) {
+        print('DNSTT tunnel verification failed - connection not working');
+        _lastError = 'Tunnel verification failed - check domain and DNS server';
+        ffi.stop();
+        _currentState = VpnState.error;
+        _activeTransport = null;
+        _stateController.add(_currentState);
+        return false;
+      }
+      print('DNSTT tunnel verification passed');
+
       _currentState = VpnState.connected;
       _stateController.add(_currentState);
       return true;
     } catch (e) {
       _lastError = e.toString();
       _currentState = VpnState.error;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Connect on desktop using Slipstream subprocess
+  Future<bool> _connectDesktopSlipstream({
+    required String dnsServer,
+    required String tunnelDomain,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
+    _activeTransport = TransportType.slipstream;
+
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    try {
+      final slipstream = SlipstreamService.instance;
+      final started = await slipstream.startClient(
+        domain: tunnelDomain,
+        dnsServerAddr: dnsServer,
+        listenPort: proxyPort,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+
+      if (!started) {
+        _lastError = slipstream.lastError ?? 'Failed to start slipstream';
+        _currentState = VpnState.error;
+        _activeTransport = null;
+        _stateController.add(_currentState);
+        return false;
+      }
+
+      // Wait for proxy to be ready
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Verify tunnel actually works (15s for slipstream)
+      print('Verifying Slipstream tunnel connectivity...');
+      if (!await _verifyTunnelConnection(timeoutMs: 15000)) {
+        print('Slipstream tunnel verification failed - connection not working');
+        _lastError = 'Tunnel verification failed - check domain and DNS server';
+        await slipstream.stopClient();
+        _currentState = VpnState.error;
+        _activeTransport = null;
+        _stateController.add(_currentState);
+        return false;
+      }
+      print('Slipstream tunnel verification passed');
+
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } catch (e) {
+      _lastError = e.toString();
+      _currentState = VpnState.error;
+      _activeTransport = null;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Connect using Slipstream transport (desktop or mobile)
+  Future<bool> connectSlipstream({
+    required String dnsServer,
+    required String tunnelDomain,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    _currentState = VpnState.connecting;
+    _stateController.add(_currentState);
+    _lastError = null;
+    _isProxyMode = false;
+    _isSshTunnelMode = false;
+    _activeTransport = TransportType.slipstream;
+
+    _connectedDns = dnsServer;
+    _connectedDomain = tunnelDomain;
+
+    if (_isDesktop) {
+      return _connectDesktopSlipstream(
+        dnsServer: dnsServer,
+        tunnelDomain: tunnelDomain,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+    }
+
+    // Android: use method channel
+    if (!_platformSupported) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('connectSlipstream', {
+        'dnsServer': dnsServer,
+        'tunnelDomain': tunnelDomain,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gso': gso,
+      });
+
+      if (result == true) {
+        _currentState = VpnState.connected;
+      } else {
+        _currentState = VpnState.error;
+        _activeTransport = null;
+      }
+      _stateController.add(_currentState);
+      return result ?? false;
+    } on MissingPluginException {
+      _platformSupported = false;
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } on PlatformException catch (e) {
+      print('Slipstream connect error: ${e.message}');
+      _lastError = e.message;
+      _currentState = VpnState.error;
+      _activeTransport = null;
+      _stateController.add(_currentState);
+      return false;
+    }
+  }
+
+  /// Connect Slipstream in proxy-only mode on Android
+  Future<bool> connectSlipstreamProxy({
+    required String dnsServer,
+    required String tunnelDomain,
+    int proxyPort = 1080,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    if (_isDesktop) {
+      return connectSlipstream(
+        dnsServer: dnsServer,
+        tunnelDomain: tunnelDomain,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+    }
+
+    _currentState = VpnState.connecting;
+    _stateController.add(_currentState);
+    _lastError = null;
+    _isSshTunnelMode = false;
+    _isProxyMode = true;
+    _activeTransport = TransportType.slipstream;
+
+    _connectedDns = dnsServer;
+    _connectedDomain = tunnelDomain;
+
+    if (!_platformSupported) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('connectSlipstreamProxy', {
+        'dnsServer': dnsServer,
+        'tunnelDomain': tunnelDomain,
+        'proxyPort': proxyPort,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gso': gso,
+      });
+
+      if (result == true) {
+        _currentState = VpnState.connected;
+      } else {
+        _currentState = VpnState.error;
+        _isProxyMode = false;
+        _activeTransport = null;
+      }
+      _stateController.add(_currentState);
+      return result ?? false;
+    } on MissingPluginException {
+      _platformSupported = false;
+      await Future.delayed(const Duration(milliseconds: 1500));
+      _currentState = VpnState.connected;
+      _stateController.add(_currentState);
+      return true;
+    } on PlatformException catch (e) {
+      print('Slipstream proxy connect error: ${e.message}');
+      _lastError = e.message;
+      _currentState = VpnState.error;
+      _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return false;
     }
@@ -286,20 +640,27 @@ class VpnService {
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     }
 
     try {
-      final result = await _channel.invokeMethod<bool>('disconnect');
+      // Stop VPN service
+      await _channel.invokeMethod<bool>('disconnect');
+      // Also stop any proxy services that might still be running
+      try { await _channel.invokeMethod<bool>('disconnectProxy'); } on PlatformException catch (_) {}
+      try { await _channel.invokeMethod<bool>('disconnectSlipstreamProxy'); } on PlatformException catch (_) {}
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
+      _activeTransport = null;
       _stateController.add(_currentState);
-      return result ?? true;
+      return true;
     } on MissingPluginException {
       _platformSupported = false;
       _currentState = VpnState.disconnected;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } on PlatformException catch (e) {
@@ -310,18 +671,24 @@ class VpnService {
     }
   }
 
-  /// Disconnect on desktop using FFI
+  /// Disconnect on desktop using FFI or Slipstream
   Future<bool> _disconnectDesktop() async {
     try {
-      final ffi = DnsttFfiService.instance;
+      // Stop slipstream if it's running
+      if (SlipstreamService.instance.isRunning) {
+        await SlipstreamService.instance.stopClient();
+      }
 
-      if (ffi.isLoaded) {
+      // Stop DNSTT FFI if it's running
+      final ffi = DnsttFfiService.instance;
+      if (ffi.isLoaded && ffi.isRunning) {
         ffi.stop();
       }
 
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } catch (e) {
@@ -526,6 +893,7 @@ class VpnService {
       _connectedDns = null;
       _connectedDomain = null;
       _isSshTunnelMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } catch (e) {
@@ -618,22 +986,29 @@ class VpnService {
       _connectedDns = null;
       _connectedDomain = null;
       _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     }
 
     try {
-      final result = await _channel.invokeMethod<bool>('disconnectProxy');
+      // Use the right disconnect method based on active transport
+      final method = _activeTransport == TransportType.slipstream
+          ? 'disconnectSlipstreamProxy'
+          : 'disconnectProxy';
+      final result = await _channel.invokeMethod<bool>(method);
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
       _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return result ?? true;
     } on MissingPluginException {
       _platformSupported = false;
       _currentState = VpnState.disconnected;
       _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } on PlatformException catch (e) {
@@ -872,6 +1247,9 @@ class VpnService {
   Future<bool> isConnected() async {
     if (_isDesktop) {
       try {
+        // Check slipstream first
+        if (SlipstreamService.instance.isRunning) return true;
+        // Then check DNSTT FFI
         final ffi = DnsttFfiService.instance;
         return ffi.isLoaded && ffi.isRunning;
       } catch (e) {
@@ -948,6 +1326,57 @@ class VpnService {
     }
   }
 
+  /// Test a DNS server using Slipstream transport
+  /// Returns latency in milliseconds on success, -1 on failure
+  Future<int> testSlipstreamDnsServer({
+    required String dnsServer,
+    required String tunnelDomain,
+    String testUrl = 'https://api.ipify.org?format=json',
+    int timeoutMs = 15000,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    if (_isDesktop) {
+      // Use subprocess on desktop
+      try {
+        return await SlipstreamService.instance.testServer(
+          domain: tunnelDomain,
+          dnsServerAddr: dnsServer,
+          testUrl: testUrl,
+          timeoutMs: timeoutMs,
+          congestionControl: congestionControl,
+          keepAliveInterval: keepAliveInterval,
+          gso: gso,
+        );
+      } catch (e) {
+        print('Slipstream test error: $e');
+        return -1;
+      }
+    }
+
+    // Use method channel on mobile
+    if (!_platformSupported) return -1;
+
+    try {
+      final result = await _channel.invokeMethod<int>('testSlipstreamDnsServer', {
+        'dnsServer': dnsServer,
+        'tunnelDomain': tunnelDomain,
+        'testUrl': testUrl,
+        'timeoutMs': timeoutMs,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gso': gso,
+      });
+      return result ?? -1;
+    } on MissingPluginException {
+      return -1;
+    } on PlatformException catch (e) {
+      print('Slipstream test error: ${e.message}');
+      return -1;
+    }
+  }
+
   /// Cancel all running DNS tests (Android only)
   Future<void> cancelAllTests() async {
     if (_isDesktop) {
@@ -991,6 +1420,7 @@ class VpnService {
           _sshProcess!.kill();
           _sshProcess = null;
         }
+        SlipstreamService.instance.stopClient();
         DnsttFfiService.instance.stop();
       } catch (_) {}
     }

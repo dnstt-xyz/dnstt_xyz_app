@@ -103,7 +103,11 @@ key.properties
 
 # Binary files
 /android/app/src/main/assets/dnstt-client-*
-/android/app/src/main/jniLibs/
+# Ignore jniLibs contents except slipstream-client binaries
+/android/app/src/main/jniLibs/*
+!/android/app/src/main/jniLibs/arm64-v8a/
+/android/app/src/main/jniLibs/arm64-v8a/*
+!/android/app/src/main/jniLibs/arm64-v8a/libslipstream_client.so
 
 # Go build artifacts
 go_src/*.aar
@@ -118,5 +122,10 @@ go_src/android/
 rust_src/.android-build/
 rust_src/target/
 
-# Build artifacts
-macos/Runner/Libraries/
+# Vendor build artifacts (source is kept via git submodule)
+vendor/slipstream-rust/target/
+vendor/slipstream-rust/.picoquic-build/
+
+# Build artifacts - ignore Libraries contents except slipstream-client
+macos/Runner/Libraries/*
+!macos/Runner/Libraries/slipstream-client

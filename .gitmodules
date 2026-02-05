@@ -1,0 +1,3 @@
+[submodule "vendor/slipstream-rust"]
+	path = vendor/slipstream-rust
+	url = https://github.com/Mygod/slipstream-rust.git

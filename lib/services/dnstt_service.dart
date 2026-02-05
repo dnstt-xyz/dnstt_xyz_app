@@ -6,7 +6,9 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import '../models/dns_server.dart';
+import '../models/dnstt_config.dart';
 import 'dnstt_ffi_service.dart';
+import 'slipstream_service.dart';
 import 'vpn_service.dart';
 
 enum TestResult { success, failed, timeout }
@@ -220,7 +222,7 @@ class DnsttService {
   static bool get isDesktopPlatform =>
       Platform.isMacOS || Platform.isWindows || Platform.isLinux;
 
-  /// Tests if a DNS server works with DNSTT tunnel
+  /// Tests if a DNS server works with the tunnel (DNSTT or Slipstream)
   /// On both desktop and mobile (Android): Actually connects through the tunnel and makes HTTP request
   /// Fallback to DNS query test when no config available
   static Future<DnsttTestResult> testDnsServer(
@@ -229,8 +231,25 @@ class DnsttService {
     String? publicKey,
     String testUrl = 'https://api.ipify.org?format=json',
     Duration timeout = const Duration(seconds: 15),
+    TransportType transportType = TransportType.dnstt,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
   }) async {
-    // Use real tunnel test when we have config (works on both desktop and mobile)
+    // Slipstream transport
+    if (transportType == TransportType.slipstream && tunnelDomain != null) {
+      return _testDnsServerViaSlipstream(
+        server,
+        tunnelDomain: tunnelDomain,
+        testUrl: testUrl,
+        timeout: timeout,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+    }
+
+    // DNSTT transport: use real tunnel test when we have config
     if (tunnelDomain != null && publicKey != null) {
       return _testDnsServerViaTunnel(
         server,
@@ -243,6 +262,96 @@ class DnsttService {
 
     // Fallback to DNS query test when no config
     return _testDnsServerViaDnsQuery(server, tunnelDomain: tunnelDomain, timeout: timeout);
+  }
+
+  /// Test DNS server using Slipstream transport
+  static Future<DnsttTestResult> _testDnsServerViaSlipstream(
+    DnsServer server, {
+    required String tunnelDomain,
+    required String testUrl,
+    required Duration timeout,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
+  }) async {
+    if (isDesktopPlatform) {
+      // Desktop: use SlipstreamService subprocess
+      try {
+        final result = await SlipstreamService.instance.testServer(
+          domain: tunnelDomain,
+          dnsServerAddr: server.address,
+          testUrl: testUrl,
+          timeoutMs: timeout.inMilliseconds,
+          congestionControl: congestionControl,
+          keepAliveInterval: keepAliveInterval,
+          gso: gso,
+        );
+
+        if (result >= 0) {
+          return DnsttTestResult(
+            server: server,
+            result: TestResult.success,
+            message: 'Tunnel working',
+            latency: Duration(milliseconds: result),
+          );
+        } else {
+          return DnsttTestResult(
+            server: server,
+            result: TestResult.failed,
+            message: 'Connection failed',
+          );
+        }
+      } catch (e) {
+        return DnsttTestResult(
+          server: server,
+          result: TestResult.failed,
+          message: 'Error: $e',
+        );
+      }
+    }
+
+    // Mobile: use method channel
+    try {
+      final vpnService = VpnService();
+      await vpnService.init();
+
+      final result = await vpnService.testSlipstreamDnsServer(
+        dnsServer: server.address,
+        tunnelDomain: tunnelDomain,
+        testUrl: testUrl,
+        timeoutMs: timeout.inMilliseconds,
+        congestionControl: congestionControl,
+        keepAliveInterval: keepAliveInterval,
+        gso: gso,
+      );
+
+      if (result >= 0) {
+        return DnsttTestResult(
+          server: server,
+          result: TestResult.success,
+          message: 'Tunnel working',
+          latency: Duration(milliseconds: result),
+        );
+      } else if (result == -2) {
+        return DnsttTestResult(
+          server: server,
+          result: TestResult.failed,
+          message: 'Cancelled',
+        );
+      } else {
+        return DnsttTestResult(
+          server: server,
+          result: TestResult.failed,
+          message: 'Connection failed',
+        );
+      }
+    } catch (e) {
+      return DnsttTestResult(
+        server: server,
+        result: TestResult.failed,
+        message: 'Error: $e',
+      );
+    }
   }
 
   /// Test DNS server using actual tunnel connection (works on desktop and mobile)
@@ -514,7 +623,7 @@ class DnsttService {
     }
   }
 
-  /// Tests multiple DNS servers with DNSTT tunnel
+  /// Tests multiple DNS servers with DNSTT or Slipstream tunnel
   /// Returns true if completed, false if cancelled
   static Future<bool> testMultipleDnsServersAll(
     List<DnsServer> servers, {
@@ -525,6 +634,10 @@ class DnsttService {
     Duration timeout = const Duration(seconds: 20),
     void Function(DnsttTestResult)? onResult,
     bool Function()? shouldCancel,
+    TransportType transportType = TransportType.dnstt,
+    String congestionControl = 'dcubic',
+    int keepAliveInterval = 400,
+    bool gso = false,
   }) async {
     final queue = List<DnsServer>.from(servers);
 
@@ -548,6 +661,10 @@ class DnsttService {
           publicKey: publicKey,
           testUrl: testUrl,
           timeout: timeout,
+          transportType: transportType,
+          congestionControl: congestionControl,
+          keepAliveInterval: keepAliveInterval,
+          gso: gso,
         );
 
         // Call onResult immediately after each test
@@ -574,6 +691,10 @@ class DnsttService {
           publicKey: publicKey,
           testUrl: testUrl,
           timeout: timeout,
+          transportType: transportType,
+          congestionControl: congestionControl,
+          keepAliveInterval: keepAliveInterval,
+          gso: gso,
         ));
       }
 

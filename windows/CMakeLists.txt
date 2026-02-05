@@ -117,3 +117,14 @@ if(EXISTS "${DNSTT_DLL}")
 else()
   message(WARNING "DNSTT library not found at ${DNSTT_DLL} - run 'scripts/build_windows.sh' to build it")
 endif()
+
+# === Slipstream Client ===
+# Copy slipstream-client.exe if it exists in windows/runner/tools
+set(SLIPSTREAM_EXE "${CMAKE_CURRENT_SOURCE_DIR}/runner/tools/slipstream-client.exe")
+if(EXISTS "${SLIPSTREAM_EXE}")
+  install(FILES "${SLIPSTREAM_EXE}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+  message(STATUS "Slipstream client found: ${SLIPSTREAM_EXE}")
+else()
+  message(STATUS "Slipstream client not found at ${SLIPSTREAM_EXE} (optional)")
+endif()

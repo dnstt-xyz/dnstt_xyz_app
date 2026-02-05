@@ -72,6 +72,9 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // Initialize SlipstreamBridge to detect binary availability
+        SlipstreamBridge.init(this)
+
         // Request notification permission for Android 13+
         requestNotificationPermission()
 
@@ -171,6 +174,40 @@ class MainActivity : FlutterActivity() {
                     val proxyPort = call.argument<Int>("proxyPort") ?: 7000
                     connectProxyShared(dnsServer, tunnelDomain, publicKey, proxyPort, result)
                 }
+                // Slipstream methods
+                "connectSlipstream" -> {
+                    val dnsServer = call.argument<String>("dnsServer") ?: "8.8.8.8"
+                    val tunnelDomain = call.argument<String>("tunnelDomain") ?: ""
+                    val congestionControl = call.argument<String>("congestionControl") ?: "dcubic"
+                    val keepAliveInterval = call.argument<Int>("keepAliveInterval") ?: 400
+                    val gso = call.argument<Boolean>("gso") ?: false
+                    connectSlipstreamVpn(dnsServer, tunnelDomain, congestionControl, keepAliveInterval, gso, result)
+                }
+                "connectSlipstreamProxy" -> {
+                    val dnsServer = call.argument<String>("dnsServer") ?: "8.8.8.8"
+                    val tunnelDomain = call.argument<String>("tunnelDomain") ?: ""
+                    val proxyPort = call.argument<Int>("proxyPort") ?: 7000
+                    val congestionControl = call.argument<String>("congestionControl") ?: "dcubic"
+                    val keepAliveInterval = call.argument<Int>("keepAliveInterval") ?: 400
+                    val gso = call.argument<Boolean>("gso") ?: false
+                    connectSlipstreamProxyOnly(dnsServer, tunnelDomain, proxyPort, congestionControl, keepAliveInterval, gso, result)
+                }
+                "disconnectSlipstreamProxy" -> {
+                    disconnectSlipstreamProxyOnly(result)
+                }
+                "isSlipstreamProxyConnected" -> {
+                    result.success(SlipstreamProxyService.isRunning.get())
+                }
+                "testSlipstreamDnsServer" -> {
+                    val dnsServer = call.argument<String>("dnsServer") ?: ""
+                    val tunnelDomain = call.argument<String>("tunnelDomain") ?: ""
+                    val testUrl = call.argument<String>("testUrl") ?: "https://api.ipify.org?format=json"
+                    val timeoutMs = call.argument<Int>("timeoutMs") ?: 15000
+                    val congestionControl = call.argument<String>("congestionControl") ?: "dcubic"
+                    val keepAliveInterval = call.argument<Int>("keepAliveInterval") ?: 400
+                    val gso = call.argument<Boolean>("gso") ?: false
+                    testSlipstreamDnsServer(dnsServer, tunnelDomain, testUrl, timeoutMs, congestionControl, keepAliveInterval, gso, result)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -248,7 +285,31 @@ class MainActivity : FlutterActivity() {
         result.success(true)
     }
 
+    /**
+     * Stop any running proxy services before starting a new connection.
+     * This prevents duplicate notifications and service conflicts.
+     */
+    private fun stopAllProxyServices() {
+        if (DnsttProxyService.isRunning.get()) {
+            Log.d("MainActivity", "Stopping running DNSTT proxy service")
+            val intent = Intent(this, DnsttProxyService::class.java).apply {
+                action = DnsttProxyService.ACTION_DISCONNECT
+            }
+            startService(intent)
+        }
+        if (SlipstreamProxyService.isRunning.get()) {
+            Log.d("MainActivity", "Stopping running Slipstream proxy service")
+            val intent = Intent(this, SlipstreamProxyService::class.java).apply {
+                action = SlipstreamProxyService.ACTION_DISCONNECT
+            }
+            startService(intent)
+        }
+    }
+
     private fun startVpnService(proxyHost: String, proxyPort: Int, dnsServer: String, tunnelDomain: String, publicKey: String) {
+        // Stop any proxy services first
+        stopAllProxyServices()
+
         val serviceIntent = Intent(this, DnsttVpnService::class.java).apply {
             action = DnsttVpnService.ACTION_CONNECT
             putExtra(DnsttVpnService.EXTRA_PROXY_HOST, proxyHost)
@@ -280,6 +341,15 @@ class MainActivity : FlutterActivity() {
         if (DnsttProxyService.isRunning.get()) {
             result.success(true)
             return
+        }
+
+        // Stop VPN and other proxy services
+        stopAllProxyServices()
+        if (DnsttVpnService.isRunning.get()) {
+            val vpnIntent = Intent(this, DnsttVpnService::class.java).apply {
+                action = DnsttVpnService.ACTION_DISCONNECT
+            }
+            startService(vpnIntent)
         }
 
         Log.d("DnsttProxy", "Starting proxy service on port $proxyPort")
@@ -378,6 +448,224 @@ class MainActivity : FlutterActivity() {
         }
         startForegroundService(serviceIntent)
         result.success(true)
+    }
+
+    // Slipstream VPN mode
+    private fun connectSlipstreamVpn(
+        dnsServer: String,
+        tunnelDomain: String,
+        congestionControl: String,
+        keepAliveInterval: Int,
+        gso: Boolean,
+        result: MethodChannel.Result
+    ) {
+        val intent = VpnService.prepare(this)
+        if (intent != null) {
+            pendingResult = result
+            pendingSlipstreamVpnParams = SlipstreamVpnParams(dnsServer, tunnelDomain, congestionControl, keepAliveInterval, gso)
+            startActivityForResult(intent, VPN_REQUEST_CODE)
+            return
+        }
+
+        startSlipstreamVpnService(dnsServer, tunnelDomain, congestionControl, keepAliveInterval, gso)
+        result.success(true)
+    }
+
+    private data class SlipstreamVpnParams(
+        val dnsServer: String,
+        val tunnelDomain: String,
+        val congestionControl: String,
+        val keepAliveInterval: Int,
+        val gso: Boolean
+    )
+
+    private var pendingSlipstreamVpnParams: SlipstreamVpnParams? = null
+
+    private fun startSlipstreamVpnService(
+        dnsServer: String,
+        tunnelDomain: String,
+        congestionControl: String,
+        keepAliveInterval: Int,
+        gso: Boolean
+    ) {
+        // Stop any proxy services first
+        stopAllProxyServices()
+
+        val serviceIntent = Intent(this, DnsttVpnService::class.java).apply {
+            action = DnsttVpnService.ACTION_CONNECT
+            putExtra(DnsttVpnService.EXTRA_PROXY_HOST, "127.0.0.1")
+            putExtra(DnsttVpnService.EXTRA_PROXY_PORT, 7000)
+            putExtra(DnsttVpnService.EXTRA_DNS_SERVER, dnsServer)
+            putExtra(DnsttVpnService.EXTRA_TUNNEL_DOMAIN, tunnelDomain)
+            putExtra(DnsttVpnService.EXTRA_PUBLIC_KEY, "")
+            putExtra(DnsttVpnService.EXTRA_TRANSPORT_TYPE, "slipstream")
+            putExtra(DnsttVpnService.EXTRA_CONGESTION_CONTROL, congestionControl)
+            putExtra(DnsttVpnService.EXTRA_KEEP_ALIVE_INTERVAL, keepAliveInterval)
+            putExtra(DnsttVpnService.EXTRA_GSO, gso)
+        }
+        startForegroundService(serviceIntent)
+    }
+
+    // Slipstream proxy-only mode
+    private fun connectSlipstreamProxyOnly(
+        dnsServer: String,
+        tunnelDomain: String,
+        proxyPort: Int,
+        congestionControl: String,
+        keepAliveInterval: Int,
+        gso: Boolean,
+        result: MethodChannel.Result
+    ) {
+        if (SlipstreamProxyService.isRunning.get()) {
+            result.success(true)
+            return
+        }
+
+        // Stop VPN and other proxy services
+        stopAllProxyServices()
+        if (DnsttVpnService.isRunning.get()) {
+            val vpnIntent = Intent(this, DnsttVpnService::class.java).apply {
+                action = DnsttVpnService.ACTION_DISCONNECT
+            }
+            startService(vpnIntent)
+        }
+
+        Log.d("SlipstreamProxy", "Starting slipstream proxy service on port $proxyPort")
+
+        SlipstreamProxyService.stateCallback = { state ->
+            runOnUiThread {
+                eventSink?.success(state)
+            }
+        }
+
+        val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
+            action = SlipstreamProxyService.ACTION_CONNECT
+            putExtra(SlipstreamProxyService.EXTRA_DNS_SERVER, dnsServer)
+            putExtra(SlipstreamProxyService.EXTRA_TUNNEL_DOMAIN, tunnelDomain)
+            putExtra(SlipstreamProxyService.EXTRA_PROXY_PORT, proxyPort)
+            putExtra(SlipstreamProxyService.EXTRA_CONGESTION_CONTROL, congestionControl)
+            putExtra(SlipstreamProxyService.EXTRA_KEEP_ALIVE_INTERVAL, keepAliveInterval)
+            putExtra(SlipstreamProxyService.EXTRA_GSO, gso)
+            putExtra(SlipstreamProxyService.EXTRA_SHARE_PROXY, false)
+        }
+        startForegroundService(serviceIntent)
+        result.success(true)
+    }
+
+    private fun disconnectSlipstreamProxyOnly(result: MethodChannel.Result) {
+        Log.d("SlipstreamProxy", "Stopping slipstream proxy service")
+
+        val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
+            action = SlipstreamProxyService.ACTION_DISCONNECT
+        }
+        startService(serviceIntent)
+        result.success(true)
+    }
+
+    // Slipstream DNS server testing
+    private fun testSlipstreamDnsServer(
+        dnsServer: String,
+        tunnelDomain: String,
+        testUrl: String,
+        timeoutMs: Int,
+        congestionControl: String,
+        keepAliveInterval: Int,
+        gso: Boolean,
+        result: MethodChannel.Result
+    ) {
+        if (!SlipstreamBridge.isAvailable()) {
+            Log.e("SlipstreamTest", "Slipstream library not available")
+            result.success(-1)
+            return
+        }
+
+        if (testsCancelled.get()) {
+            result.success(-2)
+            return
+        }
+
+        val port = getNextTestPort()
+
+        val job = testScope.launch {
+            var bridge: SlipstreamBridge? = null
+            var resultSent = false
+
+            fun sendResult(value: Int) {
+                if (!resultSent) {
+                    resultSent = true
+                    runBlocking(Dispatchers.Main) { result.success(value) }
+                }
+            }
+
+            try {
+                if (testsCancelled.get()) {
+                    sendResult(-2)
+                    return@launch
+                }
+
+                bridge = SlipstreamBridge()
+                val started = bridge.startClient(
+                    domain = tunnelDomain,
+                    dnsServer = dnsServer,
+                    congestionControl = congestionControl,
+                    keepAliveInterval = keepAliveInterval,
+                    port = port,
+                    host = "127.0.0.1",
+                    gso = gso
+                )
+
+                if (!started) {
+                    Log.e("SlipstreamTest", "Failed to start test client: ${bridge.lastError}")
+                    sendResult(-1)
+                    return@launch
+                }
+
+                delay(1000)
+
+                if (testsCancelled.get()) {
+                    bridge.stopClient()
+                    sendResult(-2)
+                    return@launch
+                }
+
+                // Make HTTP request through the SOCKS5 proxy
+                val startTime = System.currentTimeMillis()
+                val proxy = java.net.Proxy(
+                    java.net.Proxy.Type.SOCKS,
+                    java.net.InetSocketAddress("127.0.0.1", port)
+                )
+
+                val httpClient = okhttp3.OkHttpClient.Builder()
+                    .proxy(proxy)
+                    .connectTimeout(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .readTimeout(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .writeTimeout(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .build()
+
+                val request = okhttp3.Request.Builder().url(testUrl).build()
+                val response = httpClient.newCall(request).execute()
+                val responseCode = response.code
+                val latency = (System.currentTimeMillis() - startTime).toInt()
+                response.close()
+
+                bridge.stopClient()
+
+                if (responseCode in 200..399) {
+                    sendResult(latency)
+                } else {
+                    sendResult(-1)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                bridge?.stopClient()
+                sendResult(-2)
+            } catch (e: Exception) {
+                Log.e("SlipstreamTest", "Test failed: ${e.message}", e)
+                bridge?.stopClient()
+                sendResult(-1)
+            }
+        }
+
+        runningTests[port] = TestContext(job, null, null)
     }
 
     // SSH tunnel mode methods
@@ -629,7 +917,19 @@ class MainActivity : FlutterActivity() {
         if (requestCode == VPN_REQUEST_CODE) {
             if (resultCode == Activity.RESULT_OK) {
                 // Permission granted
-                if (pendingSshVpnParams != null) {
+                if (pendingSlipstreamVpnParams != null) {
+                    // Slipstream VPN mode
+                    val params = pendingSlipstreamVpnParams!!
+                    pendingSlipstreamVpnParams = null
+                    startSlipstreamVpnService(
+                        params.dnsServer,
+                        params.tunnelDomain,
+                        params.congestionControl,
+                        params.keepAliveInterval,
+                        params.gso
+                    )
+                    pendingResult?.success(true)
+                } else if (pendingSshVpnParams != null) {
                     // SSH tunnel with VPN mode
                     val params = pendingSshVpnParams!!
                     pendingSshVpnParams = null
@@ -659,6 +959,7 @@ class MainActivity : FlutterActivity() {
             } else {
                 // Permission denied
                 pendingSshVpnParams = null
+                pendingSlipstreamVpnParams = null
                 pendingResult?.success(false)
             }
 
@@ -897,7 +1198,19 @@ class MainActivity : FlutterActivity() {
                 Log.e("DnsttProxy", "Error stopping proxy service on destroy: ${e.message}")
             }
         }
+        // Stop slipstream proxy service if running
+        if (SlipstreamProxyService.isRunning.get()) {
+            try {
+                val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
+                    action = SlipstreamProxyService.ACTION_DISCONNECT
+                }
+                startService(serviceIntent)
+            } catch (e: Exception) {
+                Log.e("SlipstreamProxy", "Error stopping slipstream proxy on destroy: ${e.message}")
+            }
+        }
         DnsttProxyService.stateCallback = null
+        SlipstreamProxyService.stateCallback = null
         methodChannel?.setMethodCallHandler(null)
         eventChannel?.setStreamHandler(null)
         DnsttVpnService.stateCallback = null

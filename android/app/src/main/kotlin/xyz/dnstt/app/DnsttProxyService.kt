@@ -44,6 +44,9 @@ class DnsttProxyService : Service() {
     private var proxyPort: Int = 7000
     private var shareProxy: Boolean = false
 
+    // Host for proxy connection verification - always localhost
+    private val proxyHost = "127.0.0.1"
+
     private var dnsttClient: mobile.DnsttClient? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val isConnecting = AtomicBoolean(false)
@@ -106,6 +109,22 @@ class DnsttProxyService : Service() {
                 stopSelf()
                 return
             }
+
+            // Verify tunnel actually works (20s timeout for DNS tunnels)
+            Log.d(TAG, "Verifying tunnel connectivity...")
+            if (!verifyTunnelConnection(20000)) {
+                Log.e(TAG, "Tunnel verification failed - connection not working")
+                isConnecting.set(false)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    stateCallback?.invoke("proxy_error")
+                }
+                stopDnsttClient()
+                releaseWakeLock()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
+            Log.d(TAG, "Tunnel verification passed")
 
             isRunning.set(true)
             isConnecting.set(false)
@@ -207,6 +226,89 @@ class DnsttProxyService : Service() {
         while (isPortInUse(port) && (System.currentTimeMillis() - startTime) < maxWaitMs) {
             Log.d(TAG, "Waiting for port $port...")
             Thread.sleep(200)
+        }
+    }
+
+    /**
+     * Verifies the tunnel actually works by making an HTTP request through the SOCKS5 proxy.
+     */
+    private fun verifyTunnelConnection(timeoutMs: Int = 10000): Boolean {
+        return try {
+            Log.d(TAG, "Verifying tunnel connection via HTTP request...")
+
+            val socket = java.net.Socket()
+            socket.soTimeout = timeoutMs
+            socket.connect(java.net.InetSocketAddress(proxyHost, proxyPort), 5000)
+
+            val output = socket.getOutputStream()
+            val input = socket.getInputStream()
+
+            // SOCKS5 handshake
+            output.write(byteArrayOf(0x05, 0x01, 0x00))
+            output.flush()
+
+            val authResponse = ByteArray(2)
+            val authRead = input.read(authResponse)
+            if (authRead != 2 || authResponse[0] != 0x05.toByte() || authResponse[1] != 0x00.toByte()) {
+                socket.close()
+                return false
+            }
+
+            // Connect to api.ipify.org:80
+            val targetHost = "api.ipify.org"
+            val targetPort = 80
+            val connectRequest = ByteArray(7 + targetHost.length)
+            connectRequest[0] = 0x05
+            connectRequest[1] = 0x01
+            connectRequest[2] = 0x00
+            connectRequest[3] = 0x03
+            connectRequest[4] = targetHost.length.toByte()
+            System.arraycopy(targetHost.toByteArray(), 0, connectRequest, 5, targetHost.length)
+            connectRequest[5 + targetHost.length] = ((targetPort shr 8) and 0xFF).toByte()
+            connectRequest[6 + targetHost.length] = (targetPort and 0xFF).toByte()
+
+            output.write(connectRequest)
+            output.flush()
+
+            val connectResponse = ByteArray(10)
+            val responseRead = input.read(connectResponse, 0, 4)
+            if (responseRead < 4 || connectResponse[1] != 0x00.toByte()) {
+                socket.close()
+                return false
+            }
+
+            // Read remaining response
+            when (connectResponse[3]) {
+                0x01.toByte() -> input.read(ByteArray(6))
+                0x03.toByte() -> {
+                    val domainLen = input.read()
+                    input.read(ByteArray(domainLen + 2))
+                }
+                0x04.toByte() -> input.read(ByteArray(18))
+            }
+
+            // Send HTTP request
+            val httpRequest = "GET /?format=text HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n"
+            output.write(httpRequest.toByteArray())
+            output.flush()
+
+            val responseBuffer = ByteArray(256)
+            val bytesRead = input.read(responseBuffer)
+            socket.close()
+
+            if (bytesRead > 0) {
+                val response = String(responseBuffer, 0, bytesRead)
+                if (response.contains("200 OK") || response.contains("200")) {
+                    Log.d(TAG, "Tunnel verification SUCCESS")
+                    return true
+                }
+            }
+
+            Log.w(TAG, "Tunnel verification failed")
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Tunnel verification error: ${e.message}")
+            false
         }
     }
 

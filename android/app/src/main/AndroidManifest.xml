@@ -11,7 +11,8 @@
         android:label="DNSTT.XYZ"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:extractNativeLibs="true">
 
         <activity
             android:name=".MainActivity"
@@ -47,6 +48,15 @@
 
         <service
             android:name=".DnsttProxyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="proxy_tunnel"/>
+        </service>
+
+        <service
+            android:name=".SlipstreamProxyService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property

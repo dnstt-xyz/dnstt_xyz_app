@@ -1,32 +1,39 @@
 # DNSTT Client
 
-A cross-platform app that tunnels traffic through DNS using the [dnstt protocol](https://www.bamsoftware.com/software/dnstt/).
+A cross-platform app that tunnels traffic through DNS, supporting two protocols:
+- **DNSTT** - DNS-encoded tunnel using KCP + Noise encryption
+- **Slipstream** - QUIC-over-DNS tunnel (~5x faster than DNSTT)
 
 **Website**: [https://dnstt.xyz](https://dnstt.xyz)
 
 ## Features
 
 - DNS tunneling for bypassing network restrictions
+- Two tunnel protocols: DNSTT and Slipstream (QUIC-over-DNS)
 - Simple one-tap connection
-- Multiple DNS server support
-- DNSTT configuration management
+- Multiple DNS server support with latency testing
+- Configuration management for both protocols
 - Material Design UI
-- **Android**: Full device VPN tunneling
+- **Android**: Full device VPN tunneling or local SOCKS5 proxy
 - **Desktop** (macOS, Windows, Linux): SOCKS5 proxy mode
 
 ## How It Works
 
-DNSTT tunnels data through DNS queries using the following protocol stack:
+The app supports two DNS tunnel protocols:
 
+### DNSTT
+Data encoded in DNS TXT queries with KCP reliable transport and Noise encryption:
 ```
-App Traffic → TUN Interface → TCP State Machine → SOCKS5 → dnstt tunnel → DNS queries → Server
+App Traffic → SOCKS5 → dnstt tunnel (KCP+Noise) → DNS queries → Server
 ```
 
-1. **DNS Transport** - Data encoded in DNS TXT queries/responses
-2. **KCP** - Reliable transport over UDP (DNS)
-3. **Noise** - Encryption using Noise_NK protocol
-4. **smux** - Multiplexed streams over the encrypted channel
-5. **SOCKS5** - Local proxy interface
+### Slipstream
+QUIC-over-DNS for higher throughput with TLS 1.3 encryption:
+```
+App Traffic → slipstream-client (QUIC) → DNS queries → Server
+```
+
+Both protocols use the same DNS server list — the selected DNS server carries tunnel traffic for DNSTT, or acts as the resolver for Slipstream.
 
 ## Download
 
@@ -76,12 +83,14 @@ google-chrome --proxy-server="socks5://127.0.0.1:7000"
 - Go 1.21+
 - gomobile: `go install golang.org/x/mobile/cmd/gomobile@latest`
 - Java JDK 17
+- Rust toolchain (for Slipstream): [https://rustup.rs](https://rustup.rs)
+- cargo-ndk (for Android Slipstream): `cargo install cargo-ndk`
 
 ### Build Android
 
 ```bash
-# Clone the repository
-git clone https://github.com/dnstt-xyz/dnstt_xyz_app.git
+# Clone the repository (with submodules for Slipstream source)
+git clone --recursive https://github.com/dnstt-xyz/dnstt_xyz_app.git
 cd dnstt_xyz_app
 
 # Install Flutter dependencies
@@ -94,7 +103,11 @@ flutter build apk --release --split-per-abi
 ### Build Desktop
 
 ```bash
-# macOS
+# Build slipstream-client first (optional, for Slipstream protocol support)
+git submodule update --init --recursive
+./scripts/build_slipstream_desktop.sh
+
+# macOS (bundles both DNSTT + Slipstream)
 ./scripts/build_macos.sh release
 
 # Windows
@@ -118,28 +131,45 @@ cp dnstt.aar ../android/app/libs/
 CGO_ENABLED=1 go build -buildmode=c-shared -o libdnstt.dylib ./desktop
 ```
 
+### Building Slipstream for Android
+
+```bash
+# Cross-compile for all Android architectures
+./scripts/build_slipstream_android.sh
+```
+
 ## Project Structure
 
 ```
 dnstt_xyz_app/
 ├── android/          # Android native code (Kotlin)
 ├── go_src/           # Go dnstt library source
+├── vendor/
+│   └── slipstream-rust/  # Slipstream source (git submodule)
 ├── lib/              # Flutter/Dart code
 │   ├── screens/      # UI screens
 │   ├── providers/    # State management
-│   ├── services/     # VPN and storage services
+│   ├── services/     # VPN, storage, and tunnel services
 │   └── models/       # Data models
 ├── macos/            # macOS platform
 ├── windows/          # Windows platform
 ├── linux/            # Linux platform
-└── scripts/          # Build scripts
+└── scripts/          # Build scripts (DNSTT + Slipstream)
 ```
+
+## Server Setup
+
+You need a running tunnel server before using this app.
+
+- **DNSTT server**: [dnstt-deploy](https://github.com/bugfloyd/dnstt-deploy) — automated deployment scripts for dnstt server
+- **Slipstream server**: [slipstream-socks-deploy](https://github.com/dnstt-xyz/slipstream-socks-deploy) — automated deployment scripts for Slipstream server
 
 ## Configuration
 
 The app requires:
 - **DNSTT Config**: Tunnel domain and public key from your dnstt server
-- **DNS Server**: A DNS resolver that can reach your dnstt server
+- **Slipstream Config**: Tunnel domain only (no public key needed, uses QUIC/TLS)
+- **DNS Server**: A DNS resolver that can reach your tunnel server
 
 ## Support
 

@@ -217,6 +217,26 @@ class ConfigManagementScreen extends StatelessWidget {
                                       ),
                                     ),
                                   ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: config.isSlipstream
+                                          ? Colors.orange[100]
+                                          : Colors.teal[100],
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Text(
+                                      config.isSlipstream ? 'Slipstream' : 'DNSTT',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: config.isSlipstream
+                                            ? Colors.orange[700]
+                                            : Colors.teal[700],
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
                             ],
@@ -668,6 +688,10 @@ class _ConfigDialogState extends State<_ConfigDialog> {
   late TextEditingController sshPasswordController;
 
   late TunnelType selectedTunnelType;
+  late TransportType selectedTransportType;
+  late String selectedCongestionControl;
+  late int keepAliveInterval;
+  late bool gsoEnabled;
   bool showPassword = false;
 
   @override
@@ -679,6 +703,10 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     sshUsernameController = TextEditingController(text: widget.existingConfig?.sshUsername ?? '');
     sshPasswordController = TextEditingController(text: widget.existingConfig?.sshPassword ?? '');
     selectedTunnelType = widget.existingConfig?.tunnelType ?? TunnelType.socks5;
+    selectedTransportType = widget.existingConfig?.transportType ?? TransportType.dnstt;
+    selectedCongestionControl = widget.existingConfig?.congestionControl ?? 'dcubic';
+    keepAliveInterval = widget.existingConfig?.keepAliveInterval ?? 400;
+    gsoEnabled = widget.existingConfig?.gsoEnabled ?? false;
   }
 
   @override
@@ -709,6 +737,30 @@ class _ConfigDialogState extends State<_ConfigDialog> {
               ),
             ),
             const SizedBox(height: 16),
+            // Transport type selector
+            const Text(
+              'Protocol',
+              style: TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _buildTypeTag(
+                  label: 'DNSTT',
+                  isSelected: selectedTransportType == TransportType.dnstt,
+                  onTap: () => setState(() => selectedTransportType = TransportType.dnstt),
+                  color: Colors.teal,
+                ),
+                const SizedBox(width: 8),
+                _buildTypeTag(
+                  label: 'Slipstream',
+                  isSelected: selectedTransportType == TransportType.slipstream,
+                  onTap: () => setState(() => selectedTransportType = TransportType.slipstream),
+                  color: Colors.orange,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller: domainController,
               decoration: const InputDecoration(
@@ -717,18 +769,76 @@ class _ConfigDialogState extends State<_ConfigDialog> {
                 border: OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: publicKeyController,
-              decoration: const InputDecoration(
-                labelText: 'Public Key (64 hex chars)',
-                hintText: 'Paste your public key here',
-                border: OutlineInputBorder(),
+            // Public key field - only for DNSTT
+            if (selectedTransportType == TransportType.dnstt) ...[
+              const SizedBox(height: 16),
+              TextField(
+                controller: publicKeyController,
+                decoration: const InputDecoration(
+                  labelText: 'Public Key (64 hex chars)',
+                  hintText: 'Paste your public key here',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+                autocorrect: false,
+                enableSuggestions: false,
               ),
-              maxLines: 2,
-              autocorrect: false,
-              enableSuggestions: false,
-            ),
+            ],
+            // Slipstream-specific settings
+            if (selectedTransportType == TransportType.slipstream) ...[
+              const SizedBox(height: 16),
+              const Text(
+                'Slipstream Settings',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                value: selectedCongestionControl,
+                decoration: const InputDecoration(
+                  labelText: 'Congestion Control',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'dcubic', child: Text('DCubic (default)')),
+                  DropdownMenuItem(value: 'bbr', child: Text('BBR')),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => selectedCongestionControl = value);
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: TextEditingController(text: keepAliveInterval.toString()),
+                      decoration: const InputDecoration(
+                        labelText: 'Keep Alive (ms)',
+                        border: OutlineInputBorder(),
+                        helperText: 'Default: 400ms',
+                      ),
+                      keyboardType: TextInputType.number,
+                      onChanged: (value) {
+                        final parsed = int.tryParse(value);
+                        if (parsed != null && parsed > 0) {
+                          keepAliveInterval = parsed;
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                title: const Text('GSO (Generic Segmentation Offload)'),
+                subtitle: const Text('May improve throughput'),
+                value: gsoEnabled,
+                onChanged: (value) => setState(() => gsoEnabled = value),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ],
             const SizedBox(height: 16),
             const Text(
               'Tunnel Type',
@@ -839,18 +949,20 @@ class _ConfigDialogState extends State<_ConfigDialog> {
       return;
     }
 
-    // Public key validation
-    if (publicKey.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Public key is required')),
-      );
-      return;
-    }
-    if (publicKey.length != 64) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Public key must be 64 hex characters')),
-      );
-      return;
+    // Public key validation (only for DNSTT)
+    if (selectedTransportType == TransportType.dnstt) {
+      if (publicKey.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Public key is required for DNSTT')),
+        );
+        return;
+      }
+      if (publicKey.length != 64) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Public key must be 64 hex characters')),
+        );
+        return;
+      }
     }
 
     // Validate SSH settings if SSH type selected
@@ -878,26 +990,46 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     if (widget.existingConfig == null) {
       state.addDnsttConfig(DnsttConfig(
         name: name,
-        publicKey: publicKey,
+        publicKey: selectedTransportType == TransportType.dnstt ? publicKey : '',
         tunnelDomain: domain,
         tunnelType: selectedTunnelType,
+        transportType: selectedTransportType,
         sshUsername: selectedTunnelType == TunnelType.ssh
             ? sshUsernameController.text.trim()
             : null,
         sshPassword: selectedTunnelType == TunnelType.ssh
             ? sshPasswordController.text
             : null,
+        congestionControl: selectedTransportType == TransportType.slipstream
+            ? selectedCongestionControl
+            : null,
+        keepAliveInterval: selectedTransportType == TransportType.slipstream
+            ? keepAliveInterval
+            : null,
+        gsoEnabled: selectedTransportType == TransportType.slipstream
+            ? gsoEnabled
+            : null,
       ));
     } else {
       widget.existingConfig!.name = name;
-      widget.existingConfig!.publicKey = publicKey;
+      widget.existingConfig!.publicKey = selectedTransportType == TransportType.dnstt ? publicKey : '';
       widget.existingConfig!.tunnelDomain = domain;
       widget.existingConfig!.tunnelType = selectedTunnelType;
+      widget.existingConfig!.transportType = selectedTransportType;
       widget.existingConfig!.sshUsername = selectedTunnelType == TunnelType.ssh
           ? sshUsernameController.text.trim()
           : null;
       widget.existingConfig!.sshPassword = selectedTunnelType == TunnelType.ssh
           ? sshPasswordController.text
+          : null;
+      widget.existingConfig!.congestionControl = selectedTransportType == TransportType.slipstream
+          ? selectedCongestionControl
+          : null;
+      widget.existingConfig!.keepAliveInterval = selectedTransportType == TransportType.slipstream
+          ? keepAliveInterval
+          : null;
+      widget.existingConfig!.gsoEnabled = selectedTransportType == TransportType.slipstream
+          ? gsoEnabled
           : null;
       state.updateDnsttConfig(widget.existingConfig!);
     }

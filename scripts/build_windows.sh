@@ -70,8 +70,24 @@ echo ""
 echo "=== Step 3: Copying DLL to app directory ==="
 cp "$GO_SRC_DIR/dnstt.dll" "$APP_PATH/"
 
+# Step 3b: Bundle slipstream-client binary (if available)
+SLIPSTREAM_SRC="$PROJECT_DIR/windows/runner/tools/slipstream-client.exe"
+if [ -f "$SLIPSTREAM_SRC" ]; then
+    echo ""
+    echo "=== Step 3b: Bundling slipstream-client ==="
+    cp "$SLIPSTREAM_SRC" "$APP_PATH/slipstream-client.exe"
+    echo "slipstream-client.exe bundled"
+else
+    echo ""
+    echo "Note: slipstream-client.exe not found at $SLIPSTREAM_SRC (skipping)"
+    echo "  Place the pre-built slipstream-client.exe in windows/runner/tools/ to bundle it"
+fi
+
 echo ""
 echo "=== Build Complete ==="
 echo "App location: $APP_PATH"
+echo ""
+echo "Contents:"
+ls -la "$APP_PATH/"*.dll "$APP_PATH/"*.exe 2>/dev/null || echo "  (no binaries)"
 echo ""
 echo "To distribute, zip the contents of $APP_PATH"

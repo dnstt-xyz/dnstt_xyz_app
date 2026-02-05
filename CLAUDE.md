@@ -5,14 +5,19 @@
 
 ## Overview
 
-A cross-platform app that tunnels traffic through DNS using the dnstt protocol:
-- **Android**: Full device VPN tunneling
+A cross-platform app that tunnels traffic through DNS, supporting two protocols:
+- **DNSTT** - DNS-encoded tunnel using KCP + Noise encryption
+- **Slipstream** - QUIC-over-DNS tunnel (~5x faster than DNSTT)
+
+Platforms:
+- **Android**: Full device VPN tunneling or local SOCKS5 proxy
 - **Desktop** (macOS, Windows, Linux): SOCKS5 proxy mode
 
 The app uses:
 - **Flutter** for the UI and app logic
 - **Kotlin** for Android VPN service implementation
-- **Go (gomobile)** for the dnstt tunnel client library (source included in `go_src/`)
+- **Go (gomobile)** for the DNSTT tunnel client library (source in `go_src/`)
+- **Rust** for the Slipstream tunnel client (source in `vendor/slipstream-rust/` submodule)
 
 ### How DNSTT Works
 
@@ -28,6 +33,33 @@ Traffic flow:
 App Traffic → TUN Interface → TCP State Machine → SOCKS5 → dnstt tunnel → DNS queries → Server
 ```
 
+### How Slipstream Works
+
+Slipstream tunnels data through QUIC-over-DNS, providing significantly higher throughput than DNSTT.
+
+1. **DNS Transport** - QUIC packets carried inside DNS queries/responses
+2. **QUIC** - Reliable, encrypted transport (TLS 1.3 via picoquic)
+3. **Congestion Control** - dcubic (default) or bbr
+4. **TCP Forwarding** - Forwards TCP connections to the remote server
+
+Traffic flow:
+```
+App Traffic → TUN Interface → TCP State Machine → slipstream-client → DNS queries (QUIC) → Server
+```
+
+The `slipstream-client` binary runs as a subprocess (not a library). It listens on a local TCP port and forwards connections through the QUIC-over-DNS tunnel. The DNS server from the app's DNS server list is passed as the `--resolver` argument.
+
+### Protocol Comparison
+
+| Feature | DNSTT | Slipstream |
+|---------|-------|------------|
+| Transport | KCP over DNS TXT | QUIC over DNS |
+| Encryption | Noise_NK | TLS 1.3 (QUIC) |
+| Config requires | Public key + domain | Domain only |
+| DNS server role | Carries DNS-encoded traffic | Used as `--resolver` |
+| Integration | Go library (FFI/gomobile) | Subprocess binary |
+| Speed | Baseline | ~5x faster |
+
 ## Prerequisites
 
 - Flutter SDK 3.x+
@@ -35,6 +67,8 @@ App Traffic → TUN Interface → TCP State Machine → SOCKS5 → dnstt tunnel 
 - Go 1.21+
 - gomobile: `go install golang.org/x/mobile/cmd/gomobile@latest`
 - Java JDK 17
+- Rust toolchain (for Slipstream): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- cargo-ndk (for Android Slipstream): `cargo install cargo-ndk`
 
 ## Project Structure
 
@@ -46,15 +80,22 @@ dnstt_app/
 │       │   └── dnstt.aar               # Compiled Go dnstt library
 │       ├── src/main/
 │       │   ├── AndroidManifest.xml
+│       │   ├── jniLibs/
+│       │   │   └── arm64-v8a/
+│       │   │       └── libslipstream_client.so  # Slipstream binary for Android
 │       │   └── kotlin/xyz/dnstt/app/
 │       │       ├── MainActivity.kt      # Flutter platform channel bridge
 │       │       ├── DnsttVpnService.kt   # Android VPN service + packet handling
+│       │       ├── SlipstreamBridge.kt  # Slipstream subprocess manager (Android)
+│       │       ├── SlipstreamProxyService.kt  # Slipstream proxy foreground service
 │       │       ├── TcpConnection.kt     # TCP state machine for VPN
 │       │       └── Socks5Client.kt      # SOCKS5 proxy client
 │       └── build.gradle.kts
 ├── go_src/                              # Go dnstt library source (included in repo)
 │   ├── mobile/
 │   │   └── mobile.go                    # Go mobile bindings
+│   ├── desktop/
+│   │   └── desktop.go                   # C-compatible FFI bindings for desktop
 │   ├── dns/                             # DNS encoding/decoding
 │   ├── noise/                           # Noise encryption
 │   ├── turbotunnel/                     # Tunnel management
@@ -62,11 +103,13 @@ dnstt_app/
 │   ├── dnstt-server/                    # Server code (reference)
 │   ├── go.mod
 │   └── go.sum
+├── vendor/
+│   └── slipstream-rust/                 # Slipstream source (git submodule)
 ├── lib/
 │   ├── main.dart                        # App entry point
 │   ├── screens/
-│   │   ├── home_screen.dart             # Main VPN control screen
-│   │   ├── config_management_screen.dart # DNSTT config management
+│   │   ├── home_screen.dart             # Main control screen
+│   │   ├── config_management_screen.dart # Config management (DNSTT + Slipstream)
 │   │   ├── dns_management_screen.dart   # DNS server management
 │   │   ├── donate_screen.dart           # Donation/support page
 │   │   └── test_screen.dart             # DNS server testing
@@ -74,11 +117,30 @@ dnstt_app/
 │   │   └── app_state.dart               # State management (Provider)
 │   ├── services/
 │   │   ├── vpn_service.dart             # Flutter VPN service wrapper
+│   │   ├── dnstt_ffi_service.dart       # Dart FFI bindings for desktop (DNSTT)
+│   │   ├── slipstream_service.dart      # Slipstream subprocess manager (desktop)
 │   │   ├── storage_service.dart         # Local storage (SharedPreferences)
-│   │   └── dnstt_service.dart           # DNSTT tunnel testing
+│   │   └── dnstt_service.dart           # Tunnel testing (DNSTT + Slipstream)
 │   └── models/
 │       ├── dns_server.dart              # DNS server model
-│       └── dnstt_config.dart            # DNSTT config model
+│       └── dnstt_config.dart            # Config model (DNSTT + Slipstream)
+├── macos/
+│   └── Runner/
+│       ├── Libraries/
+│       │   └── slipstream-client        # Slipstream binary for macOS
+│       └── SlipstreamInherit.entitlements
+├── windows/
+│   └── runner/tools/
+│       └── slipstream-client.exe        # Slipstream binary for Windows (place here)
+├── linux/
+│   └── tools/
+│       └── slipstream-client            # Slipstream binary for Linux (place here)
+├── scripts/
+│   ├── build_macos.sh                   # macOS build (bundles DNSTT + Slipstream)
+│   ├── build_windows.sh                 # Windows build (bundles DNSTT + Slipstream)
+│   ├── build_linux.sh                   # Linux build (bundles DNSTT + Slipstream)
+│   ├── build_slipstream_desktop.sh      # Build slipstream-client from source
+│   └── build_slipstream_android.sh      # Cross-compile slipstream for Android
 ├── pubspec.yaml
 └── CLAUDE.md                            # This file
 ```
@@ -288,8 +350,23 @@ The Android VPN service that:
 - Creates TUN interface for capturing traffic
 - Excludes the app itself from VPN routing (so dnstt UDP packets bypass VPN)
 - Processes IP packets from TUN
-- Routes TCP through SOCKS5 proxy (dnstt tunnel)
+- Routes TCP through SOCKS5 proxy (DNSTT or Slipstream tunnel)
 - Handles DNS queries directly
+- Processes SYN packets asynchronously (thread pool) to avoid blocking the VPN loop during Slipstream's slower SOCKS5 handshake through the DNS tunnel
+
+### SlipstreamBridge.kt
+
+Android Slipstream manager that:
+- Finds the `libslipstream_client.so` binary in `applicationInfo.nativeLibraryDir`
+- Spawns `slipstream-client` as a subprocess with appropriate arguments
+- Manages lifecycle (start/stop/isRunning)
+- Passes DNS server address as `--resolver` argument
+
+### SlipstreamProxyService.kt
+
+Android foreground service for Slipstream proxy mode (non-VPN):
+- Runs as a foreground service with notification
+- Uses `SlipstreamBridge` to manage the subprocess
 
 ### TcpConnection.kt
 
@@ -301,11 +378,19 @@ TCP state machine that:
 
 ### mobile.go (Go)
 
-The dnstt client library that:
+The DNSTT client library that:
 - Creates DNS-encoded tunnel
 - Handles Noise encryption
 - Manages KCP reliable transport
 - Provides SOCKS5 proxy interface on localhost:7000
+
+### slipstream_service.dart (Desktop)
+
+Desktop Slipstream manager that:
+- Finds the `slipstream-client` binary in platform-specific locations
+- Spawns it as a subprocess with `--tcp-listen-port`, `--domain`, `--resolver`, `--congestion-control`
+- Manages lifecycle, monitors stderr for errors
+- Provides `testServer()` for DNS server testing
 
 ## Development Workflow
 
@@ -519,14 +604,26 @@ done
 - The signing uses debug keystore; for production, use your release keystore
 - Some debug paths may remain embedded in native `.so` files (from Flutter/Go compilers); to fully remove these, build on a CI server or Docker container
 
-## DNSTT Config Format
+## Config Format
 
-The app uses configs with:
+The app supports two transport types:
+
+### DNSTT Config
 - **Name**: Display name
+- **Transport**: DNSTT
 - **Tunnel Domain**: e.g., `tunnel.example.com`
-- **Public Key**: Noise public key in hex format
+- **Public Key**: Noise public key in hex format (required)
 
-DNS servers are tested against the tunnel to find working ones.
+### Slipstream Config
+- **Name**: Display name
+- **Transport**: Slipstream
+- **Tunnel Domain**: e.g., `tunnel.example.com`
+- **Congestion Control**: `dcubic` (default) or `bbr`
+- **Keep Alive Interval**: milliseconds (default 400)
+- **GSO**: Generic Segmentation Offload toggle (default off)
+- No public key needed (QUIC/TLS handles encryption)
+
+DNS servers from the DNS server list are used for both protocols. For DNSTT, the DNS server carries the tunnel traffic. For Slipstream, the DNS server is used as the `--resolver` argument.
 
 ---
 
@@ -537,35 +634,10 @@ The app also supports desktop platforms. On desktop, instead of creating a syste
 ### Desktop Architecture
 
 On desktop platforms:
-- **Go Library**: Compiled as a native shared library (`.dylib` on macOS, `.dll` on Windows, `.so` on Linux)
-- **FFI Bindings**: Dart FFI is used to call the Go library directly
-- **SOCKS5 Proxy**: The dnstt tunnel runs as a local SOCKS5 proxy on `127.0.0.1:7000`
+- **DNSTT**: Go library compiled as a native shared library (`.dylib`/`.dll`/`.so`), loaded via Dart FFI
+- **Slipstream**: Pre-built `slipstream-client` binary managed as a subprocess
+- **SOCKS5 Proxy**: Both protocols provide a local proxy on `127.0.0.1:<port>` (default 7000)
 - **No VPN**: Users must configure their applications to use the SOCKS5 proxy
-
-### Project Structure (Desktop)
-
-```
-dnstt_app/
-├── go_src/
-│   └── desktop/
-│       └── desktop.go              # C-compatible FFI bindings for desktop
-├── lib/services/
-│   ├── vpn_service.dart            # Updated to support desktop (FFI mode)
-│   └── dnstt_ffi_service.dart      # Dart FFI bindings for desktop
-├── macos/
-│   ├── Runner/
-│   │   ├── Libraries/
-│   │   │   └── libdnstt.dylib      # Go library for macOS
-│   │   ├── DebugProfile.entitlements
-│   │   └── Release.entitlements
-│   └── Podfile
-├── windows/                         # Windows platform support
-├── linux/                           # Linux platform support
-└── scripts/
-    ├── build_macos.sh              # macOS build script
-    ├── build_windows.sh            # Windows build script
-    └── build_linux.sh              # Linux build script
-```
 
 ### Building for macOS (Apple Silicon M1/M2/M3)
 
@@ -700,6 +772,69 @@ google-chrome --proxy-server="socks5://127.0.0.1:7000"
 2. Check "SOCKS Proxy"
 3. Server: `127.0.0.1`, Port: `7000`
 
+---
+
+## Building Slipstream Client
+
+The Slipstream client is a Rust binary (`slipstream-client`) that runs as a subprocess. The source is included as a git submodule at `vendor/slipstream-rust/`.
+
+### Initial Setup
+
+```bash
+# Initialize the submodule
+git submodule update --init --recursive
+
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Building for Desktop (Current Platform)
+
+```bash
+# Build and stage binary for the current platform
+./scripts/build_slipstream_desktop.sh
+
+# Or use a pre-built binary
+./scripts/build_slipstream_desktop.sh --binary /path/to/slipstream-client
+```
+
+This places the binary at:
+- **macOS**: `macos/Runner/Libraries/slipstream-client` (bundled to `Contents/Frameworks/` by `build_macos.sh`)
+- **Windows**: `windows/runner/tools/slipstream-client.exe`
+- **Linux**: `linux/tools/slipstream-client`
+
+### Building for Android (Cross-Compilation)
+
+The Android binary is cross-compiled from Rust to an ARM64 ELF binary and bundled as a native library.
+
+```bash
+# Prerequisites
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+cargo install cargo-ndk
+
+# Build for all Android architectures
+./scripts/build_slipstream_android.sh
+```
+
+Output: `android/app/src/main/jniLibs/<abi>/libslipstream_client.so`
+
+**Important Android notes:**
+- The binary is named `libslipstream_client.so` (lib prefix, .so suffix) so Android's native library loader extracts it
+- `android:extractNativeLibs="true"` must be set in `AndroidManifest.xml` so the binary is extracted to disk for subprocess execution
+- The binary is found at runtime via `applicationInfo.nativeLibraryDir`
+- OpenSSL is statically linked (no external dependencies beyond libc/libdl)
+
+### How Slipstream is Bundled Per Platform
+
+| Platform | Staging Location | Bundle Destination | Integration |
+|----------|------------------|--------------------|-------------|
+| macOS | `macos/Runner/Libraries/slipstream-client` | `Contents/Frameworks/slipstream-client` | Subprocess, signed with `com.apple.security.inherit` entitlement |
+| Windows | `windows/runner/tools/slipstream-client.exe` | Next to `.exe` in install dir | Subprocess |
+| Linux | `linux/tools/slipstream-client` | `<bundle>/lib/slipstream-client` | Subprocess |
+| Android | `jniLibs/arm64-v8a/libslipstream_client.so` | APK `lib/arm64-v8a/` | Subprocess via `SlipstreamBridge.kt` |
+
+---
+
 ### Desktop Entitlements (macOS)
 
 The app requires network entitlements. These are configured in:
@@ -716,18 +851,28 @@ Required entitlements:
 <true/>
 ```
 
+The `slipstream-client` subprocess is signed with `com.apple.security.inherit` entitlement (`macos/Runner/SlipstreamInherit.entitlements`) so it inherits the parent app's sandbox capabilities (network access). This is handled automatically by `build_macos.sh`.
+
 ### Desktop Quick Reference
 
 ```bash
+# === Build Slipstream client first (optional, needed for Slipstream protocol) ===
+git submodule update --init --recursive
+./scripts/build_slipstream_desktop.sh
+
 # === macOS ===
-./scripts/build_macos.sh release
+./scripts/build_macos.sh release    # bundles both libdnstt.dylib + slipstream-client
 open build/macos/Build/Products/Release/DNSTT_XYZ.app
 
 # === Windows ===
-./scripts/build_windows.sh release
+./scripts/build_windows.sh release  # bundles both dnstt.dll + slipstream-client.exe
 # Run: build\windows\x64\runner\Release\dnstt_xyz_app.exe
 
 # === Linux ===
-./scripts/build_linux.sh release
+./scripts/build_linux.sh release    # bundles both libdnstt.so + slipstream-client
 ./build/linux/x64/release/bundle/dnstt_xyz_app
+
+# === Android (Slipstream binary) ===
+./scripts/build_slipstream_android.sh  # cross-compile for Android
+# Then build APK normally: flutter build apk --release
 ```

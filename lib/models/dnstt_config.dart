@@ -2,8 +2,10 @@ import 'package:uuid/uuid.dart';
 
 /// Transport type enumeration - the underlying tunnel protocol
 /// - dnstt: Original DNSTT protocol (DNS TXT + KCP + Noise)
+/// - slipstream: Slipstream protocol (QUIC-over-DNS, ~5x faster)
 enum TransportType {
   dnstt,
+  slipstream,
 }
 
 /// Tunnel type enumeration - what the server forwards to
@@ -38,6 +40,14 @@ class DnsttConfig {
   String? sshPassword;
   String? sshPrivateKey;
 
+  /// Slipstream-specific settings (only used when transportType is slipstream)
+  /// Congestion control algorithm: "bbr" or "dcubic" (default: "dcubic")
+  String? congestionControl;
+  /// Keep-alive interval in milliseconds (default: 400)
+  int? keepAliveInterval;
+  /// Generic Segmentation Offload (default: false)
+  bool? gsoEnabled;
+
   DnsttConfig({
     String? id,
     required this.name,
@@ -48,6 +58,9 @@ class DnsttConfig {
     this.sshUsername,
     this.sshPassword,
     this.sshPrivateKey,
+    this.congestionControl,
+    this.keepAliveInterval,
+    this.gsoEnabled,
   }) : id = id ?? const Uuid().v4();
 
   Map<String, dynamic> toJson() => {
@@ -60,22 +73,37 @@ class DnsttConfig {
         'sshUsername': sshUsername,
         'sshPassword': sshPassword,
         'sshPrivateKey': sshPrivateKey,
+        'congestionControl': congestionControl,
+        'keepAliveInterval': keepAliveInterval,
+        'gsoEnabled': gsoEnabled,
       };
 
   factory DnsttConfig.fromJson(Map<String, dynamic> json) => DnsttConfig(
         id: json['id'],
         name: json['name'],
-        publicKey: json['publicKey'],
+        publicKey: json['publicKey'] ?? '',
         tunnelDomain: json['tunnelDomain'],
         transportType: _parseTransportType(json['transportType']),
         tunnelType: _parseTunnelType(json['tunnelType']),
         sshUsername: json['sshUsername'],
         sshPassword: json['sshPassword'],
         sshPrivateKey: json['sshPrivateKey'],
+        congestionControl: json['congestionControl'],
+        keepAliveInterval: json['keepAliveInterval'],
+        gsoEnabled: json['gsoEnabled'],
       );
 
   static TransportType _parseTransportType(dynamic value) {
-    // Always return dnstt (only supported transport)
+    if (value == null) return TransportType.dnstt;
+    if (value is String) {
+      switch (value.toLowerCase()) {
+        case 'slipstream':
+          return TransportType.slipstream;
+        case 'dnstt':
+        default:
+          return TransportType.dnstt;
+      }
+    }
     return TransportType.dnstt;
   }
 
@@ -93,11 +121,16 @@ class DnsttConfig {
     return TunnelType.socks5;
   }
 
+  /// Whether this config uses the Slipstream transport
+  bool get isSlipstream => transportType == TransportType.slipstream;
+
   /// Basic validation
-  bool get isValid =>
-      publicKey.isNotEmpty &&
-      tunnelDomain.isNotEmpty &&
-      publicKey.length == 64;
+  /// Slipstream configs don't need publicKey, but DNSTT configs do
+  bool get isValid {
+    if (tunnelDomain.isEmpty) return false;
+    if (isSlipstream) return true;
+    return publicKey.isNotEmpty && publicKey.length == 64;
+  }
 
   /// Check if SSH settings are valid (when tunnel type is ssh)
   bool get isSshValid =>
@@ -121,6 +154,9 @@ class DnsttConfig {
     String? sshUsername,
     String? sshPassword,
     String? sshPrivateKey,
+    String? congestionControl,
+    int? keepAliveInterval,
+    bool? gsoEnabled,
   }) {
     return DnsttConfig(
       id: id ?? this.id,
@@ -132,6 +168,9 @@ class DnsttConfig {
       sshUsername: sshUsername ?? this.sshUsername,
       sshPassword: sshPassword ?? this.sshPassword,
       sshPrivateKey: sshPrivateKey ?? this.sshPrivateKey,
+      congestionControl: congestionControl ?? this.congestionControl,
+      keepAliveInterval: keepAliveInterval ?? this.keepAliveInterval,
+      gsoEnabled: gsoEnabled ?? this.gsoEnabled,
     );
   }
 }
