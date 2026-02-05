@@ -2,7 +2,7 @@ name: dnstt_xyz_app
 description: "DNSTT Client - DNS Tunnel Mobile App"
 publish_to: 'none'
 
-version: 2.1.0+4
+version: 2.2.0+5
 
 environment:
   sdk: ^3.10.7
