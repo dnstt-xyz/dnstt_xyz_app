@@ -11,6 +11,7 @@ class StorageService {
   static const String _testUrlKey = 'test_url';
   static const String _proxyPortKey = 'proxy_port';
   static const String _connectionModeKey = 'connection_mode';
+  static const String _useAutoDnsKey = 'use_auto_dns';
   static const int defaultProxyPort = 1080;
 
   final SharedPreferences _prefs;
@@ -142,5 +143,12 @@ class StorageService {
 
   Future<void> setConnectionMode(String mode) async {
     await _prefs.setString(_connectionModeKey, mode);
+  }
+
+  // Auto DNS
+  Future<bool> getUseAutoDns() async => _prefs.getBool(_useAutoDnsKey) ?? false;
+
+  Future<void> setUseAutoDns(bool value) async {
+    await _prefs.setBool(_useAutoDnsKey, value);
   }
 }

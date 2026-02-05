@@ -419,7 +419,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 context,
                 Icons.dns,
                 'DNS',
-                state.activeDns!.address,
+                state.useAutoDns
+                    ? '${state.activeDns!.address} (Auto)'
+                    : state.activeDns!.address,
               )
             else
               _buildInfoItem(
@@ -597,7 +599,9 @@ class _HomeScreenState extends State<HomeScreen> {
           context,
           icon: Icons.dns,
           title: 'DNS Servers',
-          subtitle: '${state.dnsServers.length} servers',
+          subtitle: state.useAutoDns
+              ? 'Local DNS: ${state.activeDns?.address ?? 'detecting...'}'
+              : '${state.dnsServers.length} servers',
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const DnsManagementScreen()),
@@ -608,7 +612,9 @@ class _HomeScreenState extends State<HomeScreen> {
           context,
           icon: Icons.settings,
           title: 'Settings',
-          subtitle: 'Proxy port: ${state.proxyPort}',
+          subtitle: state.useAutoDns
+              ? 'Local DNS on | Port: ${state.proxyPort}'
+              : 'Proxy port: ${state.proxyPort}',
           onTap: () => _showSettingsDialog(context, state),
           color: Colors.blueGrey,
         ),
@@ -669,39 +675,73 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Settings'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Local Proxy Port',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: portController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                hintText: '1080',
-                helperText: 'Port for local SOCKS5 proxy (1-65535)',
-                border: OutlineInputBorder(),
+        content: StatefulBuilder(
+          builder: (stfContext, setDialogState) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Local Proxy Port',
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Note: Change takes effect on next connection.',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[600],
+              const SizedBox(height: 8),
+              TextField(
+                controller: portController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  hintText: '1080',
+                  helperText: 'Port for local SOCKS5 proxy (1-65535)',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Text(
+                'Note: Change takes effect on next connection.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                ),
+              ),
+              const Divider(),
+              const SizedBox(height: 8),
+              const Text(
+                'DNS Detection',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Use Local DNS (Beta)'),
+                subtitle: state.useAutoDns
+                    ? Text(
+                        state.activeDns != null
+                            ? 'Detected: ${state.activeDns!.address}'
+                            : state.autoDnsError ?? 'Detecting...',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: state.activeDns != null
+                              ? Colors.green
+                              : Colors.orange,
+                        ),
+                      )
+                    : const Text(
+                        'Use system DNS from active network',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                value: state.useAutoDns,
+                onChanged: (value) async {
+                  await state.setUseAutoDns(value);
+                  setDialogState(() {});
+                },
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
@@ -710,7 +750,7 @@ class _HomeScreenState extends State<HomeScreen> {
               final port = int.tryParse(portText);
               if (port != null && port >= 1 && port <= 65535) {
                 state.setProxyPort(port);
-                Navigator.pop(context);
+                Navigator.pop(dialogContext);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('Proxy port set to $port'),
@@ -734,6 +774,21 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _connect(BuildContext context, AppState state) async {
+    if (state.useAutoDns) {
+      await state.refreshAutoDns();
+      if (state.activeDns == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(state.autoDnsError ?? 'Could not detect system DNS'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
     final isDesktop = VpnService.isDesktopPlatform;
     final isSshTunnel = state.activeConfig?.tunnelType == TunnelType.ssh;
     final isSlipstream = state.activeConfig?.isSlipstream ?? false;

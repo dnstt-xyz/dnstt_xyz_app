@@ -4,6 +4,7 @@ import '../models/dnstt_config.dart';
 import '../services/storage_service.dart';
 import '../services/dnstt_service.dart';
 import '../services/vpn_service.dart';
+import '../services/system_dns_service.dart';
 
 enum ConnectionStatus { disconnected, connecting, connected, error }
 
@@ -25,11 +26,16 @@ class AppState extends ChangeNotifier {
   String _testUrl = 'https://www.google.com';
   int _proxyPort = StorageService.defaultProxyPort;
   String _connectionMode = 'vpn';
+  bool _useAutoDns = false;
+  DnsServer? _autoDnsServer;
+  String? _autoDnsError;
 
   List<DnsServer> get dnsServers => _dnsServers;
   List<DnsttConfig> get dnsttConfigs => _dnsttConfigs;
   DnsttConfig? get activeConfig => _activeConfig;
-  DnsServer? get activeDns => _activeDns;
+  DnsServer? get activeDns => _useAutoDns ? _autoDnsServer : _activeDns;
+  bool get useAutoDns => _useAutoDns;
+  String? get autoDnsError => _autoDnsError;
   ConnectionStatus get connectionStatus => _connectionStatus;
   String? get connectionError => _connectionError;
   bool get isTestingAll => _isTestingAll;
@@ -69,6 +75,9 @@ class AppState extends ChangeNotifier {
     _testUrl = await _storage!.getTestUrl() ?? 'https://www.google.com';
     _proxyPort = await _storage!.getProxyPort();
     _connectionMode = await _storage!.getConnectionMode() ?? 'vpn';
+
+    _useAutoDns = await _storage!.getUseAutoDns();
+    if (_useAutoDns) await _detectSystemDns();
 
     notifyListeners();
   }
@@ -447,6 +456,36 @@ class AppState extends ChangeNotifier {
       await vpnService.init();
       await vpnService.cancelAllTests();
     }
+  }
+
+  // Auto DNS
+  Future<void> setUseAutoDns(bool value) async {
+    _useAutoDns = value;
+    await _storage!.setUseAutoDns(value);
+    if (value) {
+      await _detectSystemDns();
+    } else {
+      _autoDnsServer = null;
+      _autoDnsError = null;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _detectSystemDns() async {
+    _autoDnsError = null;
+    final addr = await SystemDnsService.detectSystemDns();
+    if (addr != null) {
+      _autoDnsServer = DnsServer(id: 'auto-dns', address: addr, name: 'System DNS');
+    } else {
+      _autoDnsServer = null;
+      _autoDnsError = 'Could not detect system DNS';
+    }
+  }
+
+  Future<void> refreshAutoDns() async {
+    if (!_useAutoDns) return;
+    await _detectSystemDns();
+    notifyListeners();
   }
 
   // Connection

@@ -19,6 +19,7 @@ import mobile.Mobile
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import android.net.ConnectivityManager
 import android.util.Log
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -197,6 +198,16 @@ class MainActivity : FlutterActivity() {
                 }
                 "isSlipstreamProxyConnected" -> {
                     result.success(SlipstreamProxyService.isRunning.get())
+                }
+                "getSystemDns" -> {
+                    try {
+                        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                        val lp = cm.getLinkProperties(cm.activeNetwork)
+                        val dns = lp?.dnsServers?.firstOrNull { !it.hostAddress!!.contains(':') }?.hostAddress
+                        result.success(dns)
+                    } catch (e: Exception) {
+                        result.success(null)
+                    }
                 }
                 "testSlipstreamDnsServer" -> {
                     val dnsServer = call.argument<String>("dnsServer") ?: ""
