@@ -121,6 +121,48 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
               onChanged: (value) => setState(() => _searchQuery = value),
             ),
           ),
+          // Auto DNS banner
+          Consumer<AppState>(
+            builder: (context, state, _) {
+              if (!state.useAutoDns) return const SizedBox.shrink();
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_fix_high, color: Colors.blue[700], size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Local DNS is enabled (Beta)',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                          Text(
+                            state.activeDns != null
+                                ? 'Using system DNS: ${state.activeDns!.address}'
+                                : state.autoDnsError ?? 'Detecting...',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => state.setUseAutoDns(false),
+                      child: const Text('Disable'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
           // Test buttons row with progress
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -313,8 +355,8 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                         contentPadding: const EdgeInsets.only(left: 0, right: 8),
                         leading: Radio<String>(
                           value: server.id,
-                          groupValue: state.activeDns?.id,
-                          onChanged: (_) => state.setActiveDns(server),
+                          groupValue: state.useAutoDns ? null : state.activeDns?.id,
+                          onChanged: state.useAutoDns ? null : (_) => state.setActiveDns(server),
                           activeColor: Colors.green,
                         ),
                         title: Row(
@@ -388,7 +430,7 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                             ),
                           ],
                         ),
-                        onTap: () => state.setActiveDns(server),
+                        onTap: state.useAutoDns ? null : () => state.setActiveDns(server),
                       ),
                     );
                   },
