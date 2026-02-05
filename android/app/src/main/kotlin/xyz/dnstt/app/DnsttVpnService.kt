@@ -183,6 +183,108 @@ class DnsttVpnService : VpnService() {
         }
     }
 
+    /**
+     * Verifies the tunnel actually works by making an HTTP request through the SOCKS5 proxy.
+     * Returns true if the tunnel is working, false otherwise.
+     */
+    private fun verifyTunnelConnection(timeoutMs: Int = 10000): Boolean {
+        return try {
+            Log.d(TAG, "Verifying tunnel connection via HTTP request...")
+
+            // Connect to SOCKS5 proxy
+            val socket = java.net.Socket()
+            socket.soTimeout = timeoutMs
+            socket.connect(java.net.InetSocketAddress(proxyHost, proxyPort), 5000)
+
+            val output = socket.getOutputStream()
+            val input = socket.getInputStream()
+
+            // SOCKS5 handshake - greeting (no auth)
+            output.write(byteArrayOf(0x05, 0x01, 0x00))
+            output.flush()
+
+            // Read server response (should be 0x05, 0x00 for no auth)
+            val authResponse = ByteArray(2)
+            val authRead = input.read(authResponse)
+            if (authRead != 2 || authResponse[0] != 0x05.toByte() || authResponse[1] != 0x00.toByte()) {
+                Log.w(TAG, "SOCKS5 auth failed: ${authResponse.contentToString()}")
+                socket.close()
+                return false
+            }
+
+            // SOCKS5 connect request to api.ipify.org:80
+            val targetHost = "api.ipify.org"
+            val targetPort = 80
+            val connectRequest = ByteArray(7 + targetHost.length)
+            connectRequest[0] = 0x05 // SOCKS version
+            connectRequest[1] = 0x01 // CONNECT command
+            connectRequest[2] = 0x00 // Reserved
+            connectRequest[3] = 0x03 // Domain name address type
+            connectRequest[4] = targetHost.length.toByte()
+            System.arraycopy(targetHost.toByteArray(), 0, connectRequest, 5, targetHost.length)
+            connectRequest[5 + targetHost.length] = ((targetPort shr 8) and 0xFF).toByte()
+            connectRequest[6 + targetHost.length] = (targetPort and 0xFF).toByte()
+
+            output.write(connectRequest)
+            output.flush()
+
+            // Read SOCKS5 connect response
+            val connectResponse = ByteArray(10)
+            val responseRead = input.read(connectResponse, 0, 4) // Read first 4 bytes
+            if (responseRead < 4) {
+                Log.w(TAG, "SOCKS5 connect response too short")
+                socket.close()
+                return false
+            }
+
+            if (connectResponse[1] != 0x00.toByte()) {
+                Log.w(TAG, "SOCKS5 connect failed with code: ${connectResponse[1]}")
+                socket.close()
+                return false
+            }
+
+            // Read remaining response based on address type
+            when (connectResponse[3]) {
+                0x01.toByte() -> input.read(ByteArray(6)) // IPv4 + port
+                0x03.toByte() -> {
+                    val domainLen = input.read()
+                    input.read(ByteArray(domainLen + 2)) // domain + port
+                }
+                0x04.toByte() -> input.read(ByteArray(18)) // IPv6 + port
+            }
+
+            // Send HTTP request
+            val httpRequest = "GET /?format=text HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n"
+            output.write(httpRequest.toByteArray())
+            output.flush()
+
+            // Read HTTP response (just check for 200 OK)
+            val responseBuffer = ByteArray(256)
+            val bytesRead = input.read(responseBuffer)
+            socket.close()
+
+            if (bytesRead > 0) {
+                val response = String(responseBuffer, 0, bytesRead)
+                if (response.contains("200 OK") || response.contains("200")) {
+                    Log.d(TAG, "Tunnel verification SUCCESS - HTTP response received")
+                    return true
+                } else {
+                    Log.w(TAG, "Tunnel verification got unexpected response: ${response.take(100)}")
+                    return false
+                }
+            }
+
+            Log.w(TAG, "Tunnel verification failed - no HTTP response")
+            false
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.w(TAG, "Tunnel verification timed out")
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Tunnel verification error: ${e.message}")
+            false
+        }
+    }
+
     private fun stopDnsttClient() {
         dnsttClient?.let { client ->
             try {
@@ -372,6 +474,30 @@ class DnsttVpnService : VpnService() {
                 Log.d(TAG, "SSH mode - using existing SOCKS5 proxy on port $proxyPort")
             }
 
+            // Verify tunnel actually works by making HTTP request through SOCKS5 proxy
+            // Skip verification in SSH mode (proxy managed externally)
+            if (!isSshMode) {
+                Log.d(TAG, "Verifying tunnel connectivity...")
+                if (!verifyTunnelConnection(10000)) {
+                    Log.e(TAG, "Tunnel verification failed - connection not working")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        stateCallback?.invoke("error")
+                    }
+                    // Clean up
+                    if (transportType == "slipstream") {
+                        stopSlipstreamClient()
+                    } else {
+                        stopDnsttClient()
+                    }
+                    vpnInterface?.close()
+                    vpnInterface = null
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return
+                }
+                Log.d(TAG, "Tunnel verification passed")
+            }
+
             isRunning.set(true)
             shouldRun.set(true)
 
@@ -387,7 +513,7 @@ class DnsttVpnService : VpnService() {
             }
             runningThread?.start()
 
-            Log.d(TAG, "VPN connected successfully with dnstt tunnel")
+            Log.d(TAG, "VPN connected successfully with ${if (transportType == "slipstream") "slipstream" else "dnstt"} tunnel")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to connect VPN", e)
@@ -685,24 +811,27 @@ class DnsttVpnService : VpnService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // Use correct protocol name based on transport type
+        val protocolName = if (transportType == "slipstream") "Slipstream" else "DNSTT"
+
         val (title, text, icon) = when (state) {
             "connecting" -> Triple(
-                "DNSTT VPN Connecting...",
+                "$protocolName VPN Connecting...",
                 "Establishing tunnel via $dnsServer",
                 android.R.drawable.ic_popup_sync
             )
             "connected" -> Triple(
-                "DNSTT VPN Connected",
+                "$protocolName VPN Connected",
                 "Tunneling via $dnsServer",
                 android.R.drawable.ic_lock_lock
             )
             "disconnecting" -> Triple(
-                "DNSTT VPN Disconnecting...",
+                "$protocolName VPN Disconnecting...",
                 "Closing tunnel",
                 android.R.drawable.ic_popup_sync
             )
             else -> Triple(
-                "DNSTT VPN",
+                "$protocolName VPN",
                 "Status: $state",
                 android.R.drawable.ic_lock_lock
             )

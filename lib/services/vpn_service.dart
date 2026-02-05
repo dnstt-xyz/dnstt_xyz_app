@@ -221,6 +221,135 @@ class VpnService {
     }
   }
 
+  /// Verify the tunnel connection by making an HTTP request through the SOCKS5 proxy.
+  /// Returns true if the tunnel is working, false otherwise.
+  Future<bool> _verifyTunnelConnection({int timeoutMs = 10000}) async {
+    try {
+      print('Verifying tunnel connection via HTTP request through SOCKS5...');
+
+      final socket = await Socket.connect(
+        '127.0.0.1',
+        proxyPort,
+        timeout: Duration(milliseconds: 5000),
+      );
+      socket.setOption(SocketOption.tcpNoDelay, true);
+
+      final allBytes = <int>[];
+      final completer = Completer<void>();
+      var done = false;
+
+      socket.listen(
+        (data) {
+          allBytes.addAll(data);
+        },
+        onDone: () {
+          done = true;
+          if (!completer.isCompleted) completer.complete();
+        },
+        onError: (e) {
+          if (!completer.isCompleted) completer.completeError(e);
+        },
+      );
+
+      // Helper to wait for N bytes in allBytes
+      Future<List<int>> readBytes(int count) async {
+        final deadline = DateTime.now().add(Duration(milliseconds: timeoutMs));
+        while (allBytes.length < count) {
+          if (done) return allBytes;
+          if (DateTime.now().isAfter(deadline)) {
+            throw TimeoutException('Timeout waiting for $count bytes');
+          }
+          await Future.delayed(const Duration(milliseconds: 10));
+        }
+        return allBytes.sublist(0, count);
+      }
+
+      // SOCKS5 handshake - greeting (no auth)
+      socket.add([0x05, 0x01, 0x00]);
+      await socket.flush();
+
+      // Read server greeting response (2 bytes)
+      final authResponse = await readBytes(2);
+      if (authResponse.length < 2 || authResponse[0] != 0x05 || authResponse[1] != 0x00) {
+        socket.destroy();
+        print('SOCKS5 auth failed');
+        return false;
+      }
+      allBytes.removeRange(0, 2);
+
+      // SOCKS5 connect request to api.ipify.org:80
+      const targetHost = 'api.ipify.org';
+      const targetPort = 80;
+      final connectRequest = <int>[
+        0x05, 0x01, 0x00, 0x03,
+        targetHost.length,
+        ...targetHost.codeUnits,
+        (targetPort >> 8) & 0xFF,
+        targetPort & 0xFF,
+      ];
+      socket.add(connectRequest);
+      await socket.flush();
+
+      // Read SOCKS5 connect response header (4 bytes minimum)
+      final connectHeader = await readBytes(4);
+      if (connectHeader.length < 4 || connectHeader[1] != 0x00) {
+        socket.destroy();
+        print('SOCKS5 connect failed');
+        return false;
+      }
+
+      // Determine how many more bytes to read based on address type
+      final addrType = connectHeader[3];
+      allBytes.removeRange(0, 4);
+
+      int extraBytes;
+      if (addrType == 0x01) {
+        extraBytes = 6; // IPv4 (4) + port (2)
+      } else if (addrType == 0x04) {
+        extraBytes = 18; // IPv6 (16) + port (2)
+      } else if (addrType == 0x03) {
+        // Domain: first byte is length
+        final lenData = await readBytes(1);
+        final domainLen = lenData[0];
+        allBytes.removeRange(0, 1);
+        extraBytes = domainLen + 2; // domain + port (2)
+      } else {
+        extraBytes = 6; // Fallback
+      }
+
+      await readBytes(extraBytes);
+      allBytes.removeRange(0, extraBytes);
+
+      // Send HTTP request
+      const httpRequest = 'GET /?format=text HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n';
+      socket.add(httpRequest.codeUnits);
+      await socket.flush();
+
+      // Wait for HTTP response (at least enough to see status line)
+      final deadline = DateTime.now().add(Duration(milliseconds: timeoutMs));
+      while (allBytes.length < 12 && !done) {
+        if (DateTime.now().isAfter(deadline)) break;
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+
+      socket.destroy();
+
+      if (allBytes.isNotEmpty) {
+        final response = String.fromCharCodes(allBytes);
+        if (response.contains('200 OK') || response.contains('200')) {
+          print('Tunnel verification SUCCESS');
+          return true;
+        }
+      }
+
+      print('Tunnel verification failed - no 200 OK in response');
+      return false;
+    } catch (e) {
+      print('Tunnel verification error: $e');
+      return false;
+    }
+  }
+
   /// Connect on desktop using FFI
   Future<bool> _connectDesktop({
     required String dnsServer,
@@ -269,6 +398,22 @@ class VpnService {
         return false;
       }
 
+      // Wait for proxy to be ready
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Verify tunnel actually works
+      print('Verifying DNSTT tunnel connectivity...');
+      if (!await _verifyTunnelConnection(timeoutMs: 10000)) {
+        print('DNSTT tunnel verification failed - connection not working');
+        _lastError = 'Tunnel verification failed - check domain and DNS server';
+        ffi.stop();
+        _currentState = VpnState.error;
+        _activeTransport = null;
+        _stateController.add(_currentState);
+        return false;
+      }
+      print('DNSTT tunnel verification passed');
+
       _currentState = VpnState.connected;
       _stateController.add(_currentState);
       return true;
@@ -312,6 +457,22 @@ class VpnService {
         _stateController.add(_currentState);
         return false;
       }
+
+      // Wait for proxy to be ready
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Verify tunnel actually works
+      print('Verifying Slipstream tunnel connectivity...');
+      if (!await _verifyTunnelConnection(timeoutMs: 10000)) {
+        print('Slipstream tunnel verification failed - connection not working');
+        _lastError = 'Tunnel verification failed - check domain and DNS server';
+        await slipstream.stopClient();
+        _currentState = VpnState.error;
+        _activeTransport = null;
+        _stateController.add(_currentState);
+        return false;
+      }
+      print('Slipstream tunnel verification passed');
 
       _currentState = VpnState.connected;
       _stateController.add(_currentState);
