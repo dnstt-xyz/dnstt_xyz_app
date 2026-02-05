@@ -94,18 +94,20 @@ jobs:
       - name: Bundle libraries into app
         run: |
           FRAMEWORKS="build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks"
+          APP="build/macos/Build/Products/Release/DNSTT_XYZ.app"
           # DNSTT library
           cp go_src/libdnstt.dylib "$FRAMEWORKS/"
           install_name_tool -id "@rpath/libdnstt.dylib" "$FRAMEWORKS/libdnstt.dylib"
-          codesign --force --sign - "$FRAMEWORKS/libdnstt.dylib"
-          # Slipstream client (statically linked, no OpenSSL dylibs needed with vendored feature)
+          # Slipstream client
           cp macos/Runner/Libraries/slipstream-client "$FRAMEWORKS/slipstream-client"
           chmod +x "$FRAMEWORKS/slipstream-client"
+          # Sign all components individually first
+          codesign --force --sign - "$FRAMEWORKS/libdnstt.dylib"
           codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
-          # Re-sign entire app
-          codesign --force --deep --sign - "build/macos/Build/Products/Release/DNSTT_XYZ.app"
-          # Re-apply inherit entitlement (deep signing strips per-binary entitlements)
-          codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
+          # Deep sign the entire app (this seals all nested code)
+          codesign --force --deep --sign - "$APP"
+          # Verify signature is valid
+          codesign -vvv "$APP"
 
       - name: Create DMG
         run: |
@@ -165,14 +167,20 @@ jobs:
       - name: Bundle libraries into app
         run: |
           FRAMEWORKS="build/macos/Build/Products/Release/DNSTT_XYZ.app/Contents/Frameworks"
+          APP="build/macos/Build/Products/Release/DNSTT_XYZ.app"
+          # DNSTT library
           cp go_src/libdnstt.dylib "$FRAMEWORKS/"
           install_name_tool -id "@rpath/libdnstt.dylib" "$FRAMEWORKS/libdnstt.dylib"
-          codesign --force --sign - "$FRAMEWORKS/libdnstt.dylib"
+          # Slipstream client
           cp macos/Runner/Libraries/slipstream-client "$FRAMEWORKS/slipstream-client"
           chmod +x "$FRAMEWORKS/slipstream-client"
+          # Sign all components individually first
+          codesign --force --sign - "$FRAMEWORKS/libdnstt.dylib"
           codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
-          codesign --force --deep --sign - "build/macos/Build/Products/Release/DNSTT_XYZ.app"
-          codesign --force --sign - --entitlements macos/Runner/SlipstreamInherit.entitlements "$FRAMEWORKS/slipstream-client"
+          # Deep sign the entire app (this seals all nested code)
+          codesign --force --deep --sign - "$APP"
+          # Verify signature is valid
+          codesign -vvv "$APP"
 
       - name: Create DMG
         run: |
