@@ -28,6 +28,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _vpnService.init();
 
+    // Restore saved connection mode
+    final appState = Provider.of<AppState>(context, listen: false);
+    _connectionMode = appState.connectionMode == 'proxy'
+        ? ConnectionMode.proxy
+        : ConnectionMode.vpn;
+
     // Listen to VPN state changes and update app state accordingly
     _vpnService.stateStream.listen((vpnState) {
       final appState = Provider.of<AppState>(context, listen: false);
@@ -470,7 +476,10 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icons.vpn_key,
             label: 'VPN Mode',
             isSelected: _connectionMode == ConnectionMode.vpn,
-            onTap: () => setState(() => _connectionMode = ConnectionMode.vpn),
+            onTap: () {
+              setState(() => _connectionMode = ConnectionMode.vpn);
+              Provider.of<AppState>(context, listen: false).setConnectionMode('vpn');
+            },
           ),
           const SizedBox(width: 4),
           _buildModeButton(
@@ -478,7 +487,10 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icons.lan,
             label: 'Proxy Mode',
             isSelected: _connectionMode == ConnectionMode.proxy,
-            onTap: () => setState(() => _connectionMode = ConnectionMode.proxy),
+            onTap: () {
+              setState(() => _connectionMode = ConnectionMode.proxy);
+              Provider.of<AppState>(context, listen: false).setConnectionMode('proxy');
+            },
           ),
         ],
       ),

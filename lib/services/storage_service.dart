@@ -10,6 +10,7 @@ class StorageService {
   static const String _activeDnsKey = 'active_dns';
   static const String _testUrlKey = 'test_url';
   static const String _proxyPortKey = 'proxy_port';
+  static const String _connectionModeKey = 'connection_mode';
   static const int defaultProxyPort = 1080;
 
   final SharedPreferences _prefs;
@@ -132,5 +133,14 @@ class StorageService {
 
   Future<void> setProxyPort(int port) async {
     await _prefs.setInt(_proxyPortKey, port);
+  }
+
+  // Connection Mode (Android: 'vpn' or 'proxy')
+  Future<String?> getConnectionMode() async {
+    return _prefs.getString(_connectionModeKey);
+  }
+
+  Future<void> setConnectionMode(String mode) async {
+    await _prefs.setString(_connectionModeKey, mode);
   }
 }

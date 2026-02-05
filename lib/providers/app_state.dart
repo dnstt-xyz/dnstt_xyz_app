@@ -24,6 +24,7 @@ class AppState extends ChangeNotifier {
   int _testingFailed = 0;
   String _testUrl = 'https://www.google.com';
   int _proxyPort = StorageService.defaultProxyPort;
+  String _connectionMode = 'vpn';
 
   List<DnsServer> get dnsServers => _dnsServers;
   List<DnsttConfig> get dnsttConfigs => _dnsttConfigs;
@@ -35,6 +36,7 @@ class AppState extends ChangeNotifier {
   bool isDnsBeingTested(String id) => _testingDns[id] ?? false;
   String get testUrl => _testUrl;
   int get proxyPort => _proxyPort;
+  String get connectionMode => _connectionMode;
   int get testingProgress => _testingProgress;
   int get testingTotal => _testingTotal;
   int get testingWorking => _testingWorking;
@@ -66,6 +68,7 @@ class AppState extends ChangeNotifier {
 
     _testUrl = await _storage!.getTestUrl() ?? 'https://www.google.com';
     _proxyPort = await _storage!.getProxyPort();
+    _connectionMode = await _storage!.getConnectionMode() ?? 'vpn';
 
     notifyListeners();
   }
@@ -458,6 +461,13 @@ class AppState extends ChangeNotifier {
   Future<void> setProxyPort(int port) async {
     _proxyPort = port;
     await _storage!.setProxyPort(port);
+    notifyListeners();
+  }
+
+  // Connection Mode (Android: 'vpn' or 'proxy')
+  Future<void> setConnectionMode(String mode) async {
+    _connectionMode = mode;
+    await _storage!.setConnectionMode(mode);
     notifyListeners();
   }
 }
