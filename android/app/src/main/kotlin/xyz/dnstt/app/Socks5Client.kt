@@ -38,8 +38,8 @@ class Socks5Client(
         try {
             shouldRun = true
             socket = Socket()
-            socket?.connect(InetSocketAddress(proxyHost, proxyPort), 30000) // 30 sec timeout for dnstt
-            socket?.soTimeout = 60000 // 60 sec read timeout
+            socket?.connect(InetSocketAddress(proxyHost, proxyPort), 10000) // 10 sec connect timeout
+            socket?.soTimeout = 15000 // 15 sec timeout for handshake phase
             socket?.tcpNoDelay = true // Disable Nagle for lower latency
             inputStream = socket?.getInputStream()
             outputStream = socket?.getOutputStream()
@@ -57,6 +57,9 @@ class Socks5Client(
             }
             
             Log.d(TAG, "SOCKS5 connection established")
+
+            // Increase timeout for data phase (handshake is done)
+            socket?.soTimeout = 30000 // 30 sec read timeout for data
 
             // Start reading from the socket in a background thread
             Thread { readLoop() }.start()

@@ -19,6 +19,7 @@ import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -80,7 +81,11 @@ class DnsttVpnService : VpnService() {
     private val pendingConnections: MutableSet<String> = Collections.synchronizedSet(HashSet())
 
     // Thread pool for async SYN processing (slipstream SOCKS5 handshake goes through tunnel)
-    private var synExecutor = Executors.newFixedThreadPool(8)
+    private var synExecutor = Executors.newFixedThreadPool(16)
+
+    // Semaphore to limit concurrent SOCKS5 handshakes through the tunnel
+    // DNS tunnels have very limited bandwidth - too many concurrent handshakes will stall the tunnel
+    private val handshakeSemaphore = Semaphore(3)
 
     // Go-based dnstt client from gomobile library
     private var dnsttClient: mobile.DnsttClient? = null
@@ -535,6 +540,7 @@ class DnsttVpnService : VpnService() {
         val inputStream = FileInputStream(vpnFd)
         val outputStream = FileOutputStream(vpnFd)
         val packet = ByteBuffer.allocate(32767)
+        var lastCleanup = System.currentTimeMillis()
 
         try {
             while (shouldRun.get()) {
@@ -543,19 +549,34 @@ class DnsttVpnService : VpnService() {
                     packet.flip()
                     val packetBytes = ByteArray(length)
                     packet.get(packetBytes)
-                    
+
                     val ipHeader = IPv4Header.parse(packetBytes)
                     if (ipHeader != null) {
                         when (ipHeader.protocol) {
                             6.toByte() -> processTcpPacket(ipHeader, outputStream)
                             17.toByte() -> processUdpPacket(ipHeader, outputStream)
-                            1.toByte() -> Log.d(TAG, "ICMP packet discarded")
+                            1.toByte() -> {} // ICMP discarded silently
                         }
                     }
 
                     packet.clear()
                 } else {
                     Thread.sleep(1)
+                }
+
+                // Periodically clean up closed connections (every 10s)
+                val now = System.currentTimeMillis()
+                if (now - lastCleanup > 10000) {
+                    lastCleanup = now
+                    val closedKeys = tcpConnections.entries
+                        .filter { it.value.state == TcpConnection.State.CLOSED }
+                        .map { it.key }
+                    for (key in closedKeys) {
+                        tcpConnections.remove(key)
+                    }
+                    if (closedKeys.isNotEmpty()) {
+                        Log.d(TAG, "Cleaned up ${closedKeys.size} closed connections, active: ${tcpConnections.size}")
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -595,32 +616,42 @@ class DnsttVpnService : VpnService() {
             val dstPort = tcpHeader.destinationPort
 
             // Process SYN asynchronously to avoid blocking the VPN loop
-            // (Slipstream SOCKS5 handshake goes through the DNS tunnel and is slow)
+            // Uses semaphore to limit concurrent SOCKS5 handshakes through the tunnel
             synExecutor.submit {
                 try {
-                    val socks5Client = Socks5Client(
-                        proxyHost,
-                        proxyPort,
-                        destHostAddress,
-                        dstPort,
-                        socksUsername,
-                        socksPassword
-                    )
+                    // Limit concurrent handshakes to avoid overwhelming the DNS tunnel
+                    if (!handshakeSemaphore.tryAcquire(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        Log.w(TAG, "Handshake queue full, dropping: $connectionId")
+                        return@submit
+                    }
 
-                    val tcpConnection = TcpConnection(
-                        sourceIp = srcIp,
-                        sourcePort = srcPort,
-                        destIp = dstIp,
-                        destPort = dstPort,
-                        vpnOutput = vpnOutput,
-                        socks5Client = socks5Client
-                    )
+                    try {
+                        val socks5Client = Socks5Client(
+                            proxyHost,
+                            proxyPort,
+                            destHostAddress,
+                            dstPort,
+                            socksUsername,
+                            socksPassword
+                        )
 
-                    if (tcpConnection.handleSyn(clientSeqNum)) {
-                        tcpConnections[connectionId] = tcpConnection
-                        Log.d(TAG, "New TCP connection: $connectionId")
-                    } else {
-                        Log.e(TAG, "Failed to establish connection: $connectionId")
+                        val tcpConnection = TcpConnection(
+                            sourceIp = srcIp,
+                            sourcePort = srcPort,
+                            destIp = dstIp,
+                            destPort = dstPort,
+                            vpnOutput = vpnOutput,
+                            socks5Client = socks5Client
+                        )
+
+                        if (tcpConnection.handleSyn(clientSeqNum)) {
+                            tcpConnections[connectionId] = tcpConnection
+                            Log.d(TAG, "New TCP connection: $connectionId")
+                        } else {
+                            Log.e(TAG, "Failed to establish connection: $connectionId")
+                        }
+                    } finally {
+                        handshakeSemaphore.release()
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error processing SYN for $connectionId", e)
@@ -733,7 +764,7 @@ class DnsttVpnService : VpnService() {
         // Cancel pending SYN processing
         pendingConnections.clear()
         synExecutor.shutdownNow()
-        synExecutor = Executors.newFixedThreadPool(8)
+        synExecutor = Executors.newFixedThreadPool(16)
 
         tcpConnections.values.forEach { it.close() }
         tcpConnections.clear()
