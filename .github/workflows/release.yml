@@ -188,6 +188,7 @@ jobs:
           path: DNSTT-Client-macOS-intel.dmg
 
   build-windows:
+    if: false  # Temporarily disabled - slipstream build issues on Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -310,6 +311,7 @@ jobs:
           path: DNSTT-Client-Windows.zip
 
   build-linux:
+    if: false  # Temporarily disabled - slipstream build issues
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -373,7 +375,7 @@ jobs:
           path: DNSTT-Client-Linux.tar.gz
 
   create-release:
-    needs: [build-android, build-macos-arm64, build-macos-intel, build-windows, build-linux]
+    needs: [build-android, build-macos-arm64, build-macos-intel]  # Windows and Linux temporarily disabled
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -403,10 +405,9 @@ jobs:
           # macOS
           cp artifacts/macos-arm64-dmg/DNSTT-Client-macOS-arm64.dmg "release/DNSTT-Client-${VERSION}-macOS-arm64.dmg"
           cp artifacts/macos-intel-dmg/DNSTT-Client-macOS-intel.dmg "release/DNSTT-Client-${VERSION}-macOS-intel.dmg"
-          # Windows (alpha - Slipstream Windows support is new)
-          cp artifacts/windows-zip/DNSTT-Client-Windows.zip "release/DNSTT-Client-${VERSION}-alpha-Windows.zip"
-          # Linux (alpha - Slipstream Linux support is new)
-          cp artifacts/linux-tarball/DNSTT-Client-Linux.tar.gz "release/DNSTT-Client-${VERSION}-alpha-Linux.tar.gz"
+          # Windows and Linux temporarily disabled
+          # cp artifacts/windows-zip/DNSTT-Client-Windows.zip "release/DNSTT-Client-${VERSION}-alpha-Windows.zip"
+          # cp artifacts/linux-tarball/DNSTT-Client-Linux.tar.gz "release/DNSTT-Client-${VERSION}-alpha-Linux.tar.gz"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -428,10 +429,6 @@ jobs:
             #### macOS
             - **Apple Silicon (M1/M2/M3)**
             - **Intel**
-
-            #### Other Desktop
-            - **Windows**
-            - **Linux**
 
             ### Protocols
             - **DNSTT** - DNS-encoded tunnel (KCP + Noise encryption)
