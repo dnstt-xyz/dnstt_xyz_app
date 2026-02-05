@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:socks5_proxy/socks_client.dart';
 
 /// Manages the slipstream-client binary as a subprocess on desktop platforms.
 /// Slipstream uses QUIC-over-DNS and is significantly faster than DNSTT.
@@ -176,6 +177,9 @@ class SlipstreamService {
     _isRunning = false;
   }
 
+  /// Counter for assigning unique test ports to avoid conflicts
+  static int _nextTestPort = 18500;
+
   /// Test a slipstream server by spawning a temporary slipstream-client,
   /// making an HTTP request through the SOCKS5 proxy, and returning the latency.
   ///
@@ -183,7 +187,6 @@ class SlipstreamService {
   Future<int> testServer({
     required String domain,
     required String dnsServerAddr,
-    int listenPort = 18500,
     String testUrl = 'https://api.ipify.org?format=json',
     int timeoutMs = 15000,
     String congestionControl = 'dcubic',
@@ -192,8 +195,13 @@ class SlipstreamService {
   }) async {
     final binaryPath = _findBinaryPath();
     if (binaryPath == null) {
+      print('SlipstreamService.testServer: binary not found');
       return -1;
     }
+
+    // Use a unique port for each test to avoid port conflicts
+    final listenPort = _nextTestPort++;
+    if (_nextTestPort > 19500) _nextTestPort = 18500;
 
     Process? testProcess;
     try {
@@ -209,7 +217,14 @@ class SlipstreamService {
         args.add('--gso');
       }
 
+      print('SlipstreamService.testServer: starting on port $listenPort for $dnsServerAddr');
       testProcess = await Process.start(binaryPath, args);
+
+      // Capture stderr for debugging
+      final stderrBuffer = StringBuffer();
+      testProcess.stderr.listen((data) {
+        stderrBuffer.write(String.fromCharCodes(data));
+      });
 
       // Wait for the proxy to be ready
       await Future.delayed(const Duration(seconds: 2));
@@ -221,42 +236,57 @@ class SlipstreamService {
       ]);
 
       if (checkResult.startsWith('exited')) {
+        final stderr = stderrBuffer.toString();
+        print('SlipstreamService.testServer: process exited early for $dnsServerAddr: $stderr');
         return -1;
       }
 
-      // Make HTTP request through the SOCKS5 proxy
+      // Make HTTP/HTTPS request through SOCKS5 proxy
       final stopwatch = Stopwatch()..start();
-      final uri = Uri.parse(testUrl);
       final client = HttpClient();
       client.connectionTimeout = Duration(milliseconds: timeoutMs);
-      client.findProxy = (uri) => 'SOCKS5 127.0.0.1:$listenPort';
-
       try {
-        final request = await client.getUrl(uri).timeout(
-          Duration(milliseconds: timeoutMs),
-        );
-        final response = await request.close().timeout(
-          Duration(milliseconds: timeoutMs),
-        );
+        SocksTCPClient.assignToHttpClientWithSecureOptions(client, [
+          ProxySettings(InternetAddress('127.0.0.1'), listenPort),
+        ]);
+        final request = await client.getUrl(Uri.parse(testUrl))
+            .timeout(Duration(milliseconds: timeoutMs));
+        request.headers.set('Connection', 'close');
+        final response = await request.close()
+            .timeout(Duration(milliseconds: timeoutMs));
         stopwatch.stop();
-        client.close();
+        client.close(force: true);
 
         if (response.statusCode >= 200 && response.statusCode < 400) {
+          print('SlipstreamService.testServer: SUCCESS for $dnsServerAddr (${stopwatch.elapsedMilliseconds}ms)');
           return stopwatch.elapsedMilliseconds;
         }
+        print('SlipstreamService.testServer: HTTP ${response.statusCode} for $dnsServerAddr');
         return -1;
       } on TimeoutException {
-        client.close();
+        client.close(force: true);
+        print('SlipstreamService.testServer: timeout for $dnsServerAddr');
         return -1;
       } catch (e) {
-        client.close();
+        client.close(force: true);
+        print('SlipstreamService.testServer: error for $dnsServerAddr: $e');
         return -1;
       }
     } catch (e) {
-      print('Slipstream test error: $e');
+      print('SlipstreamService.testServer: process error for $dnsServerAddr: $e');
       return -1;
     } finally {
-      testProcess?.kill();
+      if (testProcess != null) {
+        testProcess.kill();
+        // Wait for process to actually exit so the port is released
+        await testProcess.exitCode.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () {
+            testProcess!.kill(ProcessSignal.sigkill);
+            return -1;
+          },
+        );
+      }
     }
   }
 }

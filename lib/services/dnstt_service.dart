@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:socks5_proxy/socks_client.dart';
 import '../models/dns_server.dart';
 import '../models/dnstt_config.dart';
 import 'dnstt_ffi_service.dart';
@@ -709,6 +709,7 @@ class DnsttService {
   }
 
   /// Tests the tunnel connection by making an HTTP request through the SOCKS5 proxy
+  /// Uses raw TCP SOCKS5 handshake for cross-platform compatibility
   static Future<TunnelTestResult> testTunnelConnection(
     String testUrl, {
     String proxyHost = '127.0.0.1',
@@ -716,64 +717,40 @@ class DnsttService {
     Duration timeout = const Duration(seconds: 15),
   }) async {
     final stopwatch = Stopwatch()..start();
+    final client = HttpClient();
+    client.connectionTimeout = timeout;
 
     try {
-      final uri = Uri.parse(testUrl);
-
-      // Create HTTP client with SOCKS5 proxy
-      final client = HttpClient();
-      client.connectionTimeout = timeout;
-      client.findProxy = (uri) => 'SOCKS5 $proxyHost:$proxyPort';
-
-      final request = await client.getUrl(uri).timeout(timeout);
-      final response = await request.close().timeout(timeout);
-
+      SocksTCPClient.assignToHttpClientWithSecureOptions(client, [
+        ProxySettings(InternetAddress(proxyHost), proxyPort),
+      ]);
+      final request = await client.getUrl(Uri.parse(testUrl))
+          .timeout(timeout);
+      request.headers.set('Connection', 'close');
+      final response = await request.close()
+          .timeout(timeout);
       stopwatch.stop();
-      client.close();
+      client.close(force: true);
 
-      if (response.statusCode >= 200 && response.statusCode < 400) {
-        return TunnelTestResult(
-          result: TestResult.success,
-          message: 'HTTP ${response.statusCode}',
-          latency: stopwatch.elapsed,
-          statusCode: response.statusCode,
-        );
-      } else {
-        return TunnelTestResult(
-          result: TestResult.failed,
-          message: 'HTTP ${response.statusCode}',
-          latency: stopwatch.elapsed,
-          statusCode: response.statusCode,
-        );
-      }
+      return TunnelTestResult(
+        result: response.statusCode >= 200 && response.statusCode < 400
+            ? TestResult.success : TestResult.failed,
+        message: 'HTTP ${response.statusCode}',
+        latency: stopwatch.elapsed,
+        statusCode: response.statusCode,
+      );
     } on TimeoutException {
+      client.close(force: true);
       stopwatch.stop();
-      return TunnelTestResult(
-        result: TestResult.timeout,
-        message: 'Request timed out',
-        latency: stopwatch.elapsed,
-      );
+      return TunnelTestResult(result: TestResult.timeout, message: 'Request timed out', latency: stopwatch.elapsed);
     } on SocketException catch (e) {
+      client.close(force: true);
       stopwatch.stop();
-      return TunnelTestResult(
-        result: TestResult.failed,
-        message: 'Connection failed: ${e.message}',
-        latency: stopwatch.elapsed,
-      );
-    } on HandshakeException catch (e) {
-      stopwatch.stop();
-      return TunnelTestResult(
-        result: TestResult.failed,
-        message: 'SSL error: ${e.message}',
-        latency: stopwatch.elapsed,
-      );
+      return TunnelTestResult(result: TestResult.failed, message: 'Connection failed: ${e.message}', latency: stopwatch.elapsed);
     } catch (e) {
+      client.close(force: true);
       stopwatch.stop();
-      return TunnelTestResult(
-        result: TestResult.failed,
-        message: 'Error: $e',
-        latency: stopwatch.elapsed,
-      );
+      return TunnelTestResult(result: TestResult.failed, message: 'Error: $e', latency: stopwatch.elapsed);
     }
   }
 }

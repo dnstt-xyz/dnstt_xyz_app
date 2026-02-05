@@ -58,6 +58,13 @@ class ConfigImportExportService {
       if (item is! Map<String, dynamic>) continue;
 
       try {
+        // Parse transport type (dnstt or slipstream)
+        TransportType transportType = TransportType.dnstt;
+        final transportStr = item['transportType']?.toString().toLowerCase() ?? 'dnstt';
+        if (transportStr == 'slipstream') {
+          transportType = TransportType.slipstream;
+        }
+
         // Parse tunnel type (socks5 or ssh)
         TunnelType tunnelType = TunnelType.socks5;
         final typeStr = item['tunnelType']?.toString().toLowerCase() ??
@@ -70,10 +77,18 @@ class ConfigImportExportService {
           name: item['name']?.toString() ?? 'Unnamed Config',
           publicKey: item['publicKey']?.toString() ?? item['pubkey']?.toString() ?? '',
           tunnelDomain: item['tunnelDomain']?.toString() ?? item['domain']?.toString() ?? '',
+          transportType: transportType,
           tunnelType: tunnelType,
           sshUsername: item['sshUsername']?.toString(),
           sshPassword: item['sshPassword']?.toString(),
           sshPrivateKey: item['sshPrivateKey']?.toString(),
+          congestionControl: item['congestionControl']?.toString(),
+          keepAliveInterval: item['keepAliveInterval'] is int
+              ? item['keepAliveInterval']
+              : int.tryParse(item['keepAliveInterval']?.toString() ?? ''),
+          gsoEnabled: item['gsoEnabled'] is bool
+              ? item['gsoEnabled']
+              : item['gsoEnabled']?.toString().toLowerCase() == 'true',
         );
 
         if (config.isValid) {
@@ -111,21 +126,31 @@ class ConfigImportExportService {
   /// Export configs to JSON string
   static String exportConfigsToJson(List<DnsttConfig> configs) {
     final data = {
-      'version': '1.2',
+      'version': '1.3',
       'configs': configs.map((c) {
         final configMap = <String, dynamic>{
           'name': c.name,
-          'publicKey': c.publicKey,
           'tunnelDomain': c.tunnelDomain,
+          'transportType': c.transportType.name,  // dnstt or slipstream
           'tunnelType': c.tunnelType.name,        // socks5 or ssh
         };
 
-        // Include SSH settings only for SSH tunnel type
+        // DNSTT-specific fields
+        if (c.transportType == TransportType.dnstt) {
+          configMap['publicKey'] = c.publicKey;
+        }
+
+        // Slipstream-specific fields
+        if (c.transportType == TransportType.slipstream) {
+          if (c.congestionControl != null) configMap['congestionControl'] = c.congestionControl;
+          if (c.keepAliveInterval != null) configMap['keepAliveInterval'] = c.keepAliveInterval;
+          if (c.gsoEnabled != null) configMap['gsoEnabled'] = c.gsoEnabled;
+        }
+
+        // SSH settings
         if (c.tunnelType == TunnelType.ssh) {
           if (c.sshUsername != null) configMap['sshUsername'] = c.sshUsername;
           if (c.sshPassword != null) configMap['sshPassword'] = c.sshPassword;
-          // Note: For security, we don't export sshPrivateKey
-          // It should be entered manually after import
         }
 
         return configMap;
@@ -221,6 +246,16 @@ class ConfigImportExportService {
     }
 
     return true;
+  }
+
+  /// Import DNS servers from a JSON string
+  static List<DnsServer> importDnsServersFromJson(String jsonString) {
+    try {
+      final jsonData = json.decode(jsonString);
+      return _parseDnsServerList(jsonData);
+    } catch (e) {
+      throw Exception('Failed to parse JSON: $e');
+    }
   }
 
   /// Export DNS servers to JSON string

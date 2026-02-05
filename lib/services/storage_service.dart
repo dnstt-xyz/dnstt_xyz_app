@@ -38,7 +38,7 @@ class StorageService {
   Future<void> addDnsServer(DnsServer server) async {
     final servers = await getDnsServers();
     if (!servers.contains(server)) {
-      servers.add(server);
+      servers.insert(0, server);
       await saveDnsServers(servers);
     }
   }
@@ -73,7 +73,7 @@ class StorageService {
 
   Future<void> addDnsttConfig(DnsttConfig config) async {
     final configs = await getDnsttConfigs();
-    configs.add(config);
+    configs.insert(0, config);
     await saveDnsttConfigs(configs);
   }
 

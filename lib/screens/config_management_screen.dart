@@ -1,6 +1,11 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import '../providers/app_state.dart';
 import '../models/dnstt_config.dart';
 import '../services/config_import_export_service.dart';
@@ -12,15 +17,17 @@ class ConfigManagementScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('DNSTT Configs'),
+        title: const Text('Configs'),
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
             onSelected: (value) {
               if (value == 'import_url') {
                 _showImportFromUrlDialog(context);
-              } else if (value == 'import_text') {
-                _showImportFromTextDialog(context);
+              } else if (value == 'import_clipboard') {
+                _importFromClipboard(context);
+              } else if (value == 'import_file') {
+                _importFromFile(context);
               } else if (value == 'export') {
                 _exportConfigs(context);
               } else if (value == 'import_dnsttxyz') {
@@ -39,12 +46,22 @@ class ConfigManagementScreen extends StatelessWidget {
                 ),
               ),
               const PopupMenuItem(
-                value: 'import_text',
+                value: 'import_clipboard',
                 child: Row(
                   children: [
-                    Icon(Icons.paste),
+                    Icon(Icons.content_paste),
                     SizedBox(width: 8),
-                    Text('Import from JSON'),
+                    Text('Import from Clipboard'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'import_file',
+                child: Row(
+                  children: [
+                    Icon(Icons.file_open),
+                    SizedBox(width: 8),
+                    Text('Import from File'),
                   ],
                 ),
               ),
@@ -87,7 +104,7 @@ class ConfigManagementScreen extends StatelessWidget {
                   Icon(Icons.settings, size: 64, color: Colors.grey[400]),
                   const SizedBox(height: 16),
                   Text(
-                    'No DNSTT Configs',
+                    'No Configs',
                     style: TextStyle(fontSize: 18, color: Colors.grey[600]),
                   ),
                   const SizedBox(height: 8),
@@ -321,7 +338,7 @@ class ConfigManagementScreen extends StatelessWidget {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Import from URL'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -346,26 +363,26 @@ class ConfigManagementScreen extends StatelessWidget {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
               final url = urlController.text.trim();
               if (url.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
                   const SnackBar(content: Text('Please enter a URL')),
                 );
                 return;
               }
 
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
 
               // Show loading
               showDialog(
                 context: context,
                 barrierDismissible: false,
-                builder: (context) => const Center(
+                builder: (_) => const Center(
                   child: Card(
                     child: Padding(
                       padding: EdgeInsets.all(24),
@@ -435,105 +452,67 @@ class ConfigManagementScreen extends StatelessWidget {
     );
   }
 
-  void _showImportFromTextDialog(BuildContext context) {
-    final jsonController = TextEditingController();
+  Future<void> _importFromClipboard(BuildContext context) async {
+    try {
+      final data = await Clipboard.getData('text/plain');
+      final text = data?.text?.trim();
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Import from JSON'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Paste your JSON config data:',
-                style: TextStyle(fontSize: 14),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: jsonController,
-                decoration: const InputDecoration(
-                  labelText: 'JSON Data',
-                  hintText: '{"configs": [...]}',
-                  border: OutlineInputBorder(),
-                ),
-                maxLines: 10,
-                autocorrect: false,
-                enableSuggestions: false,
-              ),
-            ],
+      if (text == null || text.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Clipboard is empty')),
+          );
+        }
+        return;
+      }
+
+      final configs = ConfigImportExportService.importConfigsFromJson(text);
+
+      if (configs.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No valid configs found in clipboard'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      final state = context.read<AppState>();
+      final result = await state.importDnsttConfigs(configs);
+
+      if (context.mounted) {
+        String message;
+        if (result.added > 0 && result.updated > 0) {
+          message = 'Added ${result.added} new configs, updated ${result.updated}';
+        } else if (result.added > 0) {
+          message = 'Imported ${result.added} new configs';
+        } else if (result.updated > 0) {
+          message = 'Updated ${result.updated} existing configs';
+        } else {
+          message = 'All configs already exist';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Import failed: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final jsonText = jsonController.text.trim();
-              if (jsonText.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please paste JSON data')),
-                );
-                return;
-              }
-
-              Navigator.pop(context);
-
-              try {
-                final configs = ConfigImportExportService.importConfigsFromJson(jsonText);
-
-                if (configs.isEmpty) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('No valid configs found in JSON')),
-                    );
-                  }
-                  return;
-                }
-
-                final state = context.read<AppState>();
-                final result = await state.importDnsttConfigs(configs);
-
-                if (context.mounted) {
-                  String message;
-                  if (result.added > 0 && result.updated > 0) {
-                    message = 'Added ${result.added} new configs, updated ${result.updated}';
-                  } else if (result.added > 0) {
-                    message = 'Imported ${result.added} new configs';
-                  } else if (result.updated > 0) {
-                    message = 'Updated ${result.updated} existing configs';
-                  } else {
-                    message = 'All configs already exist';
-                  }
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(message), backgroundColor: Colors.green),
-                  );
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Import failed: ${e.toString()}'),
-                      backgroundColor: Colors.red,
-                      duration: const Duration(seconds: 5),
-                    ),
-                  );
-                }
-              }
-            },
-            child: const Text('Import'),
-          ),
-        ],
-      ),
-    );
+        );
+      }
+    }
   }
 
-  void _exportConfigs(BuildContext context) {
+  Future<void> _exportConfigs(BuildContext context) async {
     final state = context.read<AppState>();
 
     if (state.dnsttConfigs.isEmpty) {
@@ -545,58 +524,107 @@ class ConfigManagementScreen extends StatelessWidget {
 
     final jsonString = ConfigImportExportService.exportConfigsToJson(state.dnsttConfigs);
 
-    showDialog(
+    // On desktop, directly open native save dialog
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      _saveJsonFile(context, jsonString, 'dnstt_configs.json');
+      return;
+    }
+
+    // On mobile, show bottom sheet with Share and Save options
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Export Configs'),
-        content: SingleChildScrollView(
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Exporting ${state.dnsttConfigs.length} configs:',
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                'Export ${state.dnsttConfigs.length} Configs',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: SelectableText(
-                  jsonString,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                  ),
-                ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.share),
+                title: const Text('Share'),
+                subtitle: const Text('Send via apps, AirDrop, etc.'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _shareJsonFile(context, jsonString, 'dnstt_configs.json', 'DNSTT Configs');
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.save),
+                title: const Text('Save to File'),
+                subtitle: const Text('Save JSON file to device'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _saveJsonFile(context, jsonString, 'dnstt_configs.json');
+                },
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: jsonString));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Copied to clipboard'),
-                  backgroundColor: Colors.green,
-                ),
-              );
-            },
-            icon: const Icon(Icons.copy),
-            label: const Text('Copy'),
-          ),
-        ],
       ),
     );
+  }
+
+  Future<void> _shareJsonFile(BuildContext context, String jsonString, String fileName, String subject) async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/$fileName');
+      await file.writeAsString(jsonString);
+
+      final box = context.findRenderObject() as RenderBox?;
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: subject,
+        sharePositionOrigin: box != null
+            ? box.localToGlobal(Offset.zero) & box.size
+            : null,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveJsonFile(BuildContext context, String jsonString, String fileName) async {
+    try {
+      final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+      final bytes = utf8.encode(jsonString);
+
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save $fileName',
+        fileName: fileName,
+        type: isDesktop ? FileType.any : FileType.custom,
+        allowedExtensions: isDesktop ? null : ['json'],
+        bytes: isDesktop ? null : Uint8List.fromList(bytes),
+      );
+
+      if (result != null) {
+        if (isDesktop) {
+          await File(result).writeAsString(jsonString);
+        }
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Saved to file'), backgroundColor: Colors.green),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   void _importFromDnsttXyz(BuildContext context) async {
@@ -661,6 +689,75 @@ class ConfigManagementScreen extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to fetch from dnstt.xyz: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _importFromFile(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.single;
+      String jsonString;
+
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        throw Exception('Could not read file');
+      }
+
+      final configs = ConfigImportExportService.importConfigsFromJson(jsonString);
+
+      if (configs.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No valid configs found in file'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      final state = context.read<AppState>();
+      final importResult = await state.importDnsttConfigs(configs);
+
+      if (context.mounted) {
+        String message;
+        if (importResult.added > 0 && importResult.updated > 0) {
+          message = 'Added ${importResult.added} new configs, updated ${importResult.updated}';
+        } else if (importResult.added > 0) {
+          message = 'Imported ${importResult.added} new configs';
+        } else if (importResult.updated > 0) {
+          message = 'Updated ${importResult.updated} existing configs';
+        } else {
+          message = 'All configs already exist';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: importResult.added > 0 ? Colors.green : null,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to import: ${e.toString()}'),
             backgroundColor: Colors.red,
             duration: const Duration(seconds: 5),
           ),
