@@ -428,6 +428,7 @@ class DnsttVpnService : VpnService() {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     stateCallback?.invoke("error")
                 }
+                releaseWakeLock()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return
@@ -450,6 +451,7 @@ class DnsttVpnService : VpnService() {
                         }
                         vpnInterface?.close()
                         vpnInterface = null
+                        releaseWakeLock()
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
                         return
@@ -464,6 +466,7 @@ class DnsttVpnService : VpnService() {
                         }
                         vpnInterface?.close()
                         vpnInterface = null
+                        releaseWakeLock()
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
                         return
@@ -478,7 +481,9 @@ class DnsttVpnService : VpnService() {
             // Skip verification in SSH mode (proxy managed externally)
             if (!isSshMode) {
                 Log.d(TAG, "Verifying tunnel connectivity...")
-                if (!verifyTunnelConnection(10000)) {
+                // Use longer timeout for DNS tunnels (they're inherently slow)
+                val verifyTimeout = if (transportType == "slipstream") 15000 else 20000
+                if (!verifyTunnelConnection(verifyTimeout)) {
                     Log.e(TAG, "Tunnel verification failed - connection not working")
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         stateCallback?.invoke("error")
@@ -491,6 +496,7 @@ class DnsttVpnService : VpnService() {
                     }
                     vpnInterface?.close()
                     vpnInterface = null
+                    releaseWakeLock()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return

@@ -141,9 +141,9 @@ class SlipstreamProxyService : Service() {
             // Wait a moment for proxy to be ready
             Thread.sleep(200)
 
-            // Verify tunnel actually works
+            // Verify tunnel actually works (15s timeout for slipstream)
             Log.d(TAG, "Verifying tunnel connectivity...")
-            if (!verifyTunnelConnection(10000)) {
+            if (!verifyTunnelConnection(15000)) {
                 Log.e(TAG, "Tunnel verification failed - connection not working")
                 isConnecting.set(false)
                 android.os.Handler(android.os.Looper.getMainLooper()).post {

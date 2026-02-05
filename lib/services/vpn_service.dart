@@ -401,9 +401,9 @@ class VpnService {
       // Wait for proxy to be ready
       await Future.delayed(const Duration(milliseconds: 200));
 
-      // Verify tunnel actually works
+      // Verify tunnel actually works (20s for DNS tunnel)
       print('Verifying DNSTT tunnel connectivity...');
-      if (!await _verifyTunnelConnection(timeoutMs: 10000)) {
+      if (!await _verifyTunnelConnection(timeoutMs: 20000)) {
         print('DNSTT tunnel verification failed - connection not working');
         _lastError = 'Tunnel verification failed - check domain and DNS server';
         ffi.stop();
@@ -461,9 +461,9 @@ class VpnService {
       // Wait for proxy to be ready
       await Future.delayed(const Duration(milliseconds: 200));
 
-      // Verify tunnel actually works
+      // Verify tunnel actually works (15s for slipstream)
       print('Verifying Slipstream tunnel connectivity...');
-      if (!await _verifyTunnelConnection(timeoutMs: 10000)) {
+      if (!await _verifyTunnelConnection(timeoutMs: 15000)) {
         print('Slipstream tunnel verification failed - connection not working');
         _lastError = 'Tunnel verification failed - check domain and DNS server';
         await slipstream.stopClient();
@@ -640,20 +640,27 @@ class VpnService {
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     }
 
     try {
-      final result = await _channel.invokeMethod<bool>('disconnect');
+      // Stop VPN service
+      await _channel.invokeMethod<bool>('disconnect');
+      // Also stop any proxy services that might still be running
+      try { await _channel.invokeMethod<bool>('disconnectProxy'); } on PlatformException catch (_) {}
+      try { await _channel.invokeMethod<bool>('disconnectSlipstreamProxy'); } on PlatformException catch (_) {}
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
+      _activeTransport = null;
       _stateController.add(_currentState);
-      return result ?? true;
+      return true;
     } on MissingPluginException {
       _platformSupported = false;
       _currentState = VpnState.disconnected;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } on PlatformException catch (e) {
@@ -979,22 +986,29 @@ class VpnService {
       _connectedDns = null;
       _connectedDomain = null;
       _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     }
 
     try {
-      final result = await _channel.invokeMethod<bool>('disconnectProxy');
+      // Use the right disconnect method based on active transport
+      final method = _activeTransport == TransportType.slipstream
+          ? 'disconnectSlipstreamProxy'
+          : 'disconnectProxy';
+      final result = await _channel.invokeMethod<bool>(method);
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
       _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return result ?? true;
     } on MissingPluginException {
       _platformSupported = false;
       _currentState = VpnState.disconnected;
       _isProxyMode = false;
+      _activeTransport = null;
       _stateController.add(_currentState);
       return true;
     } on PlatformException catch (e) {

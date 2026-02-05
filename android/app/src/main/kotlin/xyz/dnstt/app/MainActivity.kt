@@ -285,7 +285,31 @@ class MainActivity : FlutterActivity() {
         result.success(true)
     }
 
+    /**
+     * Stop any running proxy services before starting a new connection.
+     * This prevents duplicate notifications and service conflicts.
+     */
+    private fun stopAllProxyServices() {
+        if (DnsttProxyService.isRunning.get()) {
+            Log.d("MainActivity", "Stopping running DNSTT proxy service")
+            val intent = Intent(this, DnsttProxyService::class.java).apply {
+                action = DnsttProxyService.ACTION_DISCONNECT
+            }
+            startService(intent)
+        }
+        if (SlipstreamProxyService.isRunning.get()) {
+            Log.d("MainActivity", "Stopping running Slipstream proxy service")
+            val intent = Intent(this, SlipstreamProxyService::class.java).apply {
+                action = SlipstreamProxyService.ACTION_DISCONNECT
+            }
+            startService(intent)
+        }
+    }
+
     private fun startVpnService(proxyHost: String, proxyPort: Int, dnsServer: String, tunnelDomain: String, publicKey: String) {
+        // Stop any proxy services first
+        stopAllProxyServices()
+
         val serviceIntent = Intent(this, DnsttVpnService::class.java).apply {
             action = DnsttVpnService.ACTION_CONNECT
             putExtra(DnsttVpnService.EXTRA_PROXY_HOST, proxyHost)
@@ -317,6 +341,15 @@ class MainActivity : FlutterActivity() {
         if (DnsttProxyService.isRunning.get()) {
             result.success(true)
             return
+        }
+
+        // Stop VPN and other proxy services
+        stopAllProxyServices()
+        if (DnsttVpnService.isRunning.get()) {
+            val vpnIntent = Intent(this, DnsttVpnService::class.java).apply {
+                action = DnsttVpnService.ACTION_DISCONNECT
+            }
+            startService(vpnIntent)
         }
 
         Log.d("DnsttProxy", "Starting proxy service on port $proxyPort")
@@ -455,6 +488,9 @@ class MainActivity : FlutterActivity() {
         keepAliveInterval: Int,
         gso: Boolean
     ) {
+        // Stop any proxy services first
+        stopAllProxyServices()
+
         val serviceIntent = Intent(this, DnsttVpnService::class.java).apply {
             action = DnsttVpnService.ACTION_CONNECT
             putExtra(DnsttVpnService.EXTRA_PROXY_HOST, "127.0.0.1")
@@ -483,6 +519,15 @@ class MainActivity : FlutterActivity() {
         if (SlipstreamProxyService.isRunning.get()) {
             result.success(true)
             return
+        }
+
+        // Stop VPN and other proxy services
+        stopAllProxyServices()
+        if (DnsttVpnService.isRunning.get()) {
+            val vpnIntent = Intent(this, DnsttVpnService::class.java).apply {
+                action = DnsttVpnService.ACTION_DISCONNECT
+            }
+            startService(vpnIntent)
         }
 
         Log.d("SlipstreamProxy", "Starting slipstream proxy service on port $proxyPort")

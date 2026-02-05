@@ -110,9 +110,9 @@ class DnsttProxyService : Service() {
                 return
             }
 
-            // Verify tunnel actually works
+            // Verify tunnel actually works (20s timeout for DNS tunnels)
             Log.d(TAG, "Verifying tunnel connectivity...")
-            if (!verifyTunnelConnection(10000)) {
+            if (!verifyTunnelConnection(20000)) {
                 Log.e(TAG, "Tunnel verification failed - connection not working")
                 isConnecting.set(false)
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
