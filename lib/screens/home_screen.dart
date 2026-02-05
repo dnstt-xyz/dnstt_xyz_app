@@ -585,7 +585,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _buildMenuCard(
           context,
           icon: Icons.settings,
-          title: 'DNSTT Configs',
+          title: 'Configs',
           subtitle: '${state.dnsttConfigs.length} configurations',
           onTap: () => Navigator.push(
             context,

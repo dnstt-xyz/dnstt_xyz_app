@@ -96,6 +96,7 @@ class AppState extends ChangeNotifier {
   Future<({int added, int updated})> importDnsServers(List<DnsServer> servers) async {
     int added = 0;
     int updated = 0;
+    final newServers = <DnsServer>[];
 
     for (final server in servers) {
       // Find existing server by IP address
@@ -120,10 +121,15 @@ class AppState extends ChangeNotifier {
           updated++;
         }
       } else {
-        // New server - add it
-        _dnsServers.add(server);
+        // New server - collect for inserting at top
+        newServers.add(server);
         added++;
       }
+    }
+
+    // Insert new servers at the top, preserving their order
+    if (newServers.isNotEmpty) {
+      _dnsServers.insertAll(0, newServers);
     }
 
     await _storage!.saveDnsServers(_dnsServers);

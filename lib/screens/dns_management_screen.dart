@@ -1,6 +1,11 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import '../providers/app_state.dart';
 import '../models/dns_server.dart';
 import '../services/vpn_service.dart';
@@ -656,14 +661,14 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => DraggableScrollableSheet(
+      builder: (_) => DraggableScrollableSheet(
         initialChildSize: 0.7,
         minChildSize: 0.3,
         maxChildSize: 0.9,
         expand: false,
-        builder: (context, scrollController) => FutureBuilder<List<DnsCountryData>>(
+        builder: (sheetContext, scrollController) => FutureBuilder<List<DnsCountryData>>(
           future: BundledDnsService().loadAllCountries(),
-          builder: (context, snapshot) {
+          builder: (_, snapshot) {
             final countries = snapshot.data ?? [];
             final isLoading = snapshot.connectionState == ConnectionState.waiting;
 
@@ -678,7 +683,7 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                       const SizedBox(width: 12),
                       Text(
                         'Import DNS Servers',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
                       ),
@@ -711,8 +716,60 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                       subtitle: const Text('Fetch DNS servers from a JSON URL'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
-                        Navigator.pop(context);
+                        Navigator.pop(sheetContext);
                         _showImportFromUrlDialog(context);
+                      },
+                    ),
+                  ),
+                  // Import from File
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    color: Colors.indigo.withOpacity(0.1),
+                    child: ListTile(
+                      leading: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.indigo.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.file_open, color: Colors.indigo),
+                      ),
+                      title: const Text(
+                        'Import from File',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: const Text('Load DNS servers from a JSON file'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        _importFromFile(context);
+                      },
+                    ),
+                  ),
+                  // Import from Clipboard
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    color: Colors.teal.withOpacity(0.1),
+                    child: ListTile(
+                      leading: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.teal.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.content_paste, color: Colors.teal),
+                      ),
+                      title: const Text(
+                        'Import from Clipboard',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: const Text('Paste JSON from clipboard'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        _importFromClipboard(context);
                       },
                     ),
                   ),
@@ -737,7 +794,7 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                       subtitle: Text('${countries.fold<int>(0, (sum, c) => sum + c.servers.length)} servers from ${countries.length} countries'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
-                        Navigator.pop(context);
+                        Navigator.pop(sheetContext);
                         _importAllCountries(context, countries);
                       },
                     ),
@@ -779,14 +836,14 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
                             subtitle: Text('${country.servers.length} servers'),
                             trailing: const Icon(Icons.chevron_right),
                             onTap: () {
-                              Navigator.pop(context);
+                              Navigator.pop(sheetContext);
                               _importCountryDns(context, country);
                             },
                           ),
                         )),
                   const SizedBox(height: 12),
                   TextButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: () => Navigator.pop(sheetContext),
                     child: const Text('Cancel'),
                   ),
                 ],
@@ -1056,7 +1113,7 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Import from URL'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1086,27 +1143,27 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () {
               final url = urlController.text.trim();
               if (url.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
                   const SnackBar(content: Text('Please enter a URL')),
                 );
                 return;
               }
 
               if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                ScaffoldMessenger.of(context).showSnackBar(
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
                   const SnackBar(content: Text('URL must start with http:// or https://')),
                 );
                 return;
               }
 
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
               _importFromUrl(context, url);
             },
             child: const Text('Import'),
@@ -1191,7 +1248,7 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
     }
   }
 
-  void _exportDnsServers(BuildContext context) {
+  Future<void> _exportDnsServers(BuildContext context) async {
     final state = context.read<AppState>();
 
     if (state.dnsServers.isEmpty) {
@@ -1203,60 +1260,238 @@ class _DnsManagementScreenState extends State<DnsManagementScreen> {
 
     final jsonString = ConfigImportExportService.exportDnsServersToJson(state.dnsServers);
 
-    showDialog(
+    // On desktop, directly open native save dialog
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      _saveJsonFile(context, jsonString, 'dns_servers.json');
+      return;
+    }
+
+    // On mobile, show bottom sheet with Share and Save options
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Export DNS Servers'),
-        content: SingleChildScrollView(
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Exporting ${state.dnsServers.length} DNS servers:',
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                'Export ${state.dnsServers.length} DNS Servers',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                constraints: const BoxConstraints(maxHeight: 300),
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    jsonString,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.share),
+                title: const Text('Share'),
+                subtitle: const Text('Send via apps, AirDrop, etc.'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _shareJsonFile(context, jsonString, 'dns_servers.json', 'DNS Servers');
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.save),
+                title: const Text('Save to File'),
+                subtitle: const Text('Save JSON file to device'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _saveJsonFile(context, jsonString, 'dns_servers.json');
+                },
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: jsonString));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Copied to clipboard'),
-                  backgroundColor: Colors.green,
-                ),
-              );
-            },
-            icon: const Icon(Icons.copy),
-            label: const Text('Copy'),
-          ),
-        ],
       ),
     );
+  }
+
+  Future<void> _shareJsonFile(BuildContext context, String jsonString, String fileName, String subject) async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/$fileName');
+      await file.writeAsString(jsonString);
+
+      final box = context.findRenderObject() as RenderBox?;
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: subject,
+        sharePositionOrigin: box != null
+            ? box.localToGlobal(Offset.zero) & box.size
+            : null,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to share: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveJsonFile(BuildContext context, String jsonString, String fileName) async {
+    try {
+      final isDesktop = Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+      final bytes = utf8.encode(jsonString);
+
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save $fileName',
+        fileName: fileName,
+        type: isDesktop ? FileType.any : FileType.custom,
+        allowedExtensions: isDesktop ? null : ['json'],
+        bytes: isDesktop ? null : Uint8List.fromList(bytes),
+      );
+
+      if (result != null) {
+        if (isDesktop) {
+          await File(result).writeAsString(jsonString);
+        }
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Saved to file'), backgroundColor: Colors.green),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _importFromClipboard(BuildContext context) async {
+    try {
+      final data = await Clipboard.getData('text/plain');
+      final text = data?.text?.trim();
+
+      if (text == null || text.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Clipboard is empty')),
+          );
+        }
+        return;
+      }
+
+      final servers = ConfigImportExportService.importDnsServersFromJson(text);
+
+      if (servers.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No valid DNS servers found in clipboard'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      final state = context.read<AppState>();
+      final importResult = await state.importDnsServers(servers);
+
+      if (context.mounted) {
+        String message;
+        if (importResult.added > 0 && importResult.updated > 0) {
+          message = 'Added ${importResult.added} new servers, updated ${importResult.updated} existing';
+        } else if (importResult.added > 0) {
+          message = 'Added ${importResult.added} new DNS servers';
+        } else if (importResult.updated > 0) {
+          message = 'Updated ${importResult.updated} existing servers';
+        } else {
+          message = 'All servers already imported';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: importResult.added > 0 ? Colors.green : null,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to import from clipboard: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _importFromFile(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.single;
+      String jsonString;
+
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        throw Exception('Could not read file');
+      }
+
+      final servers = ConfigImportExportService.importDnsServersFromJson(jsonString);
+
+      if (servers.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No valid DNS servers found in file'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      final state = context.read<AppState>();
+      final importResult = await state.importDnsServers(servers);
+
+      if (context.mounted) {
+        String message;
+        if (importResult.added > 0 && importResult.updated > 0) {
+          message = 'Added ${importResult.added} new servers, updated ${importResult.updated} existing';
+        } else if (importResult.added > 0) {
+          message = 'Added ${importResult.added} new DNS servers';
+        } else if (importResult.updated > 0) {
+          message = 'Updated ${importResult.updated} existing servers';
+        } else {
+          message = 'All servers already imported';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: importResult.added > 0 ? Colors.green : null,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to import: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    }
   }
 }
