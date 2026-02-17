@@ -117,10 +117,12 @@ class SlipstreamService {
 
       _process = await Process.start(binaryPath, args);
 
-      // Monitor stderr for errors
+      // Capture stderr for error reporting
+      final stderrBuffer = StringBuffer();
       _process!.stderr.listen((data) {
         final output = String.fromCharCodes(data);
         print('slipstream-client stderr: $output');
+        stderrBuffer.write(output);
         if (output.toLowerCase().contains('error') ||
             output.toLowerCase().contains('fatal')) {
           _lastError = output.trim();
@@ -152,7 +154,15 @@ class SlipstreamService {
 
       if (result.startsWith('exited')) {
         final code = result.split(':')[1];
-        _lastError = 'slipstream-client failed to start (exit code: $code)';
+        final stderr = stderrBuffer.toString();
+        if (stderr.contains('Address already in use')) {
+          _lastError = 'Port $listenPort is already in use. '
+              'A previous slipstream-client may still be running.';
+        } else if (stderr.isNotEmpty) {
+          _lastError = stderr.trim();
+        } else {
+          _lastError = 'slipstream-client failed to start (exit code: $code)';
+        }
         _isRunning = false;
         _process = null;
         return false;
