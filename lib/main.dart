@@ -1,7 +1,9 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/app_state.dart';
 import 'services/storage_service.dart';
+import 'services/vpn_service.dart';
 import 'screens/home_screen.dart';
 import 'models/dns_server.dart';
 
@@ -21,6 +23,11 @@ void main() async {
     await appState.addDnsServer(defaultDns);
     await appState.setActiveDns(defaultDns);
   }
+
+  AppLifecycleListener(onExitRequested: () async {
+    VpnService().dispose();
+    return AppExitResponse.exit;
+  });
 
   runApp(
     ChangeNotifierProvider.value(
