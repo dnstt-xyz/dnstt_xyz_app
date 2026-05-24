@@ -400,12 +400,12 @@ class ConfigManagementScreen extends StatelessWidget {
               );
 
               try {
-                final configs = await ConfigImportExportService.importConfigsFromUrl(url);
+                final result = await ConfigImportExportService.importConfigsFromUrl(url);
 
                 if (context.mounted) {
                   Navigator.pop(context); // Close loading dialog
 
-                  if (configs.isEmpty) {
+                  if (result.configs.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('No valid configs found in URL')),
                     );
@@ -413,18 +413,25 @@ class ConfigManagementScreen extends StatelessWidget {
                   }
 
                   final state = context.read<AppState>();
-                  final result = await state.importDnsttConfigs(configs);
+                  final configResult = await state.importDnsttConfigs(result.configs);
+
+                  if (result.dnsServers.isNotEmpty) {
+                    await state.importDnsServers(result.dnsServers);
+                  }
 
                   if (context.mounted) {
                     String message;
-                    if (result.added > 0 && result.updated > 0) {
-                      message = 'Added ${result.added} new configs, updated ${result.updated}';
-                    } else if (result.added > 0) {
-                      message = 'Imported ${result.added} new configs';
-                    } else if (result.updated > 0) {
-                      message = 'Updated ${result.updated} existing configs';
+                    if (configResult.added > 0 && configResult.updated > 0) {
+                      message = 'Added ${configResult.added} new configs, updated ${configResult.updated}';
+                    } else if (configResult.added > 0) {
+                      message = 'Imported ${configResult.added} new configs';
+                    } else if (configResult.updated > 0) {
+                      message = 'Updated ${configResult.updated} existing configs';
                     } else {
                       message = 'All configs already exist';
+                    }
+                    if (result.dnsServers.isNotEmpty) {
+                      message += ' and ${result.dnsServers.length} DNS servers';
                     }
 
                     ScaffoldMessenger.of(context).showSnackBar(

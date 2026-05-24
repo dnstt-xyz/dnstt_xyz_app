@@ -5,19 +5,12 @@ import '../models/dnstt_config.dart';
 import '../models/dns_server.dart';
 
 class ConfigImportExportService {
-  /// Import DNSTT configs from a JSON URL
-  /// Expected JSON format:
-  /// {
-  ///   "version": "1.0",
-  ///   "configs": [
-  ///     {
-  ///       "name": "Server Name",
-  ///       "publicKey": "64_char_hex_key",
-  ///       "tunnelDomain": "tunnel.example.com"
-  ///     }
-  ///   ]
-  /// }
-  static Future<List<DnsttConfig>> importConfigsFromUrl(String url) async {
+  /// Import DNSTT configs (and optionally DNS servers) from a JSON URL.
+  /// Supported formats:
+  /// - Array of configs
+  /// - Object with "configs" array and optional "dnsServers" array
+  static Future<({List<DnsttConfig> configs, List<DnsServer> dnsServers})>
+      importConfigsFromUrl(String url) async {
     try {
       final response = await http.get(
         Uri.parse(url),
@@ -33,15 +26,18 @@ class ConfigImportExportService {
 
       final jsonData = json.decode(response.body);
 
-      // Handle array format (direct list of configs)
+      // Handle array format (direct list of configs, no DNS servers)
       if (jsonData is List) {
-        return _parseConfigList(jsonData);
+        return (configs: _parseConfigList(jsonData), dnsServers: <DnsServer>[]);
       }
 
-      // Handle object format with configs array
+      // Handle object format with configs array and optional dnsServers
       if (jsonData is Map<String, dynamic> && jsonData.containsKey('configs')) {
-        final configsList = jsonData['configs'] as List;
-        return _parseConfigList(configsList);
+        final configs = _parseConfigList(jsonData['configs'] as List);
+        final dnsServers = jsonData.containsKey('dnsServers')
+            ? _parseDnsServerList(jsonData['dnsServers'])
+            : <DnsServer>[];
+        return (configs: configs, dnsServers: dnsServers);
       }
 
       throw Exception('Invalid JSON format. Expected array or object with "configs" field.');
