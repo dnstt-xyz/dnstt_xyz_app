@@ -31,8 +31,8 @@ class SshTunnelClient {
         private const val DNSTT_TUNNEL_HOST = "127.0.0.1"
         private const val DNSTT_TUNNEL_PORT = 7001
 
-        // SOCKS5 proxy output port (same as other modes)
-        private const val SOCKS5_PROXY_PORT = 1080
+        // DnsttVpnService consumes the SSH SOCKS5 proxy on this port.
+        private const val SOCKS5_PROXY_PORT = 7000
     }
 
     private var session: Session? = null

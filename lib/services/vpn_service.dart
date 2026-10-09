@@ -5,17 +5,13 @@ import 'dnstt_ffi_service.dart';
 import 'slipstream_service.dart';
 import '../models/dnstt_config.dart';
 
-enum VpnState {
-  disconnected,
-  connecting,
-  connected,
-  disconnecting,
-  error,
-}
+enum VpnState { disconnected, connecting, connected, disconnecting, error }
 
 class VpnService {
   static const MethodChannel _channel = MethodChannel('xyz.dnstt.app/vpn');
-  static const EventChannel _stateChannel = EventChannel('xyz.dnstt.app/vpn_state');
+  static const EventChannel _stateChannel = EventChannel(
+    'xyz.dnstt.app/vpn_state',
+  );
 
   static final VpnService _instance = VpnService._internal();
   factory VpnService() => _instance;
@@ -270,7 +266,9 @@ class VpnService {
 
       // Read server greeting response (2 bytes)
       final authResponse = await readBytes(2);
-      if (authResponse.length < 2 || authResponse[0] != 0x05 || authResponse[1] != 0x00) {
+      if (authResponse.length < 2 ||
+          authResponse[0] != 0x05 ||
+          authResponse[1] != 0x00) {
         socket.destroy();
         print('SOCKS5 auth failed');
         return false;
@@ -281,7 +279,10 @@ class VpnService {
       const targetHost = 'api.ipify.org';
       const targetPort = 80;
       final connectRequest = <int>[
-        0x05, 0x01, 0x00, 0x03,
+        0x05,
+        0x01,
+        0x00,
+        0x03,
         targetHost.length,
         ...targetHost.codeUnits,
         (targetPort >> 8) & 0xFF,
@@ -321,7 +322,8 @@ class VpnService {
       allBytes.removeRange(0, extraBytes);
 
       // Send HTTP request
-      const httpRequest = 'GET /?format=text HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n';
+      const httpRequest =
+          'GET /?format=text HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n';
       socket.add(httpRequest.codeUnits);
       await socket.flush();
 
@@ -592,14 +594,15 @@ class VpnService {
     }
 
     try {
-      final result = await _channel.invokeMethod<bool>('connectSlipstreamProxy', {
-        'dnsServer': dnsServer,
-        'tunnelDomain': tunnelDomain,
-        'proxyPort': proxyPort,
-        'congestionControl': congestionControl,
-        'keepAliveInterval': keepAliveInterval,
-        'gso': gso,
-      });
+      final result = await _channel
+          .invokeMethod<bool>('connectSlipstreamProxy', {
+            'dnsServer': dnsServer,
+            'tunnelDomain': tunnelDomain,
+            'proxyPort': proxyPort,
+            'congestionControl': congestionControl,
+            'keepAliveInterval': keepAliveInterval,
+            'gso': gso,
+          });
 
       if (result == true) {
         _currentState = VpnState.connected;
@@ -649,8 +652,12 @@ class VpnService {
       // Stop VPN service
       await _channel.invokeMethod<bool>('disconnect');
       // Also stop any proxy services that might still be running
-      try { await _channel.invokeMethod<bool>('disconnectProxy'); } on PlatformException catch (_) {}
-      try { await _channel.invokeMethod<bool>('disconnectSlipstreamProxy'); } on PlatformException catch (_) {}
+      try {
+        await _channel.invokeMethod<bool>('disconnectProxy');
+      } on PlatformException catch (_) {}
+      try {
+        await _channel.invokeMethod<bool>('disconnectSlipstreamProxy');
+      } on PlatformException catch (_) {}
       _currentState = VpnState.disconnected;
       _connectedDns = null;
       _connectedDomain = null;
@@ -769,35 +776,52 @@ class VpnService {
       // The SSH server address should be the actual server hostname/IP that the DNSTT server forwards to
       // Since DNSTT tunnel forwards to the same server running SSH, we connect to localhost:22 through the proxy
       final proxyCommand = 'nc -X 5 -x 127.0.0.1:7001 %h %p';
-      print('Starting SSH tunnel: ssh -D $bindAddress -o ProxyCommand="$proxyCommand" $sshUsername@localhost');
+      print(
+        'Starting SSH tunnel: ssh -D $bindAddress -o ProxyCommand="$proxyCommand" $sshUsername@localhost',
+      );
 
       if (sshPassword != null && sshPassword.isNotEmpty) {
         // Try using sshpass if available
         final sshpassCheck = await Process.run('which', ['sshpass']);
         if (sshpassCheck.exitCode == 0) {
           _sshProcess = await Process.start('sshpass', [
-            '-p', sshPassword,
+            '-p',
+            sshPassword,
             'ssh',
-            '-D', bindAddress,
-            '-o', 'ProxyCommand=$proxyCommand',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', 'ServerAliveInterval=15',
-            '-o', 'ServerAliveCountMax=3',
+            '-D',
+            bindAddress,
+            '-o',
+            'ProxyCommand=$proxyCommand',
+            '-o',
+            'StrictHostKeyChecking=no',
+            '-o',
+            'UserKnownHostsFile=/dev/null',
+            '-o',
+            'ServerAliveInterval=15',
+            '-o',
+            'ServerAliveCountMax=3',
             '-N',
             '$sshUsername@localhost',
           ]);
         } else {
           // No sshpass, use expect-style approach with stdin
           _sshProcess = await Process.start('ssh', [
-            '-D', bindAddress,
-            '-o', 'ProxyCommand=$proxyCommand',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', 'ServerAliveInterval=15',
-            '-o', 'ServerAliveCountMax=3',
-            '-o', 'PreferredAuthentications=password',
-            '-o', 'PubkeyAuthentication=no',
+            '-D',
+            bindAddress,
+            '-o',
+            'ProxyCommand=$proxyCommand',
+            '-o',
+            'StrictHostKeyChecking=no',
+            '-o',
+            'UserKnownHostsFile=/dev/null',
+            '-o',
+            'ServerAliveInterval=15',
+            '-o',
+            'ServerAliveCountMax=3',
+            '-o',
+            'PreferredAuthentications=password',
+            '-o',
+            'PubkeyAuthentication=no',
             '-N',
             '$sshUsername@localhost',
           ]);
@@ -818,12 +842,18 @@ class VpnService {
       } else {
         // No password, try key-based auth
         _sshProcess = await Process.start('ssh', [
-          '-D', bindAddress,
-          '-o', 'ProxyCommand=$proxyCommand',
-          '-o', 'StrictHostKeyChecking=no',
-          '-o', 'UserKnownHostsFile=/dev/null',
-          '-o', 'ServerAliveInterval=15',
-          '-o', 'ServerAliveCountMax=3',
+          '-D',
+          bindAddress,
+          '-o',
+          'ProxyCommand=$proxyCommand',
+          '-o',
+          'StrictHostKeyChecking=no',
+          '-o',
+          'UserKnownHostsFile=/dev/null',
+          '-o',
+          'ServerAliveInterval=15',
+          '-o',
+          'ServerAliveCountMax=3',
           '-N',
           '$sshUsername@localhost',
         ]);
@@ -837,7 +867,9 @@ class VpnService {
           _currentState = VpnState.error;
           _isSshTunnelMode = false;
           _stateController.add(_currentState);
-          try { ffi.stop(); } catch (_) {}
+          try {
+            ffi.stop();
+          } catch (_) {}
         }
       });
 
@@ -1039,6 +1071,20 @@ class VpnService {
     }
   }
 
+  Future<bool> isSlipstreamProxyConnected() async {
+    if (_isDesktop || !_platformSupported) return false;
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'isSlipstreamProxyConnected',
+      );
+      return result ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   /// Connect SSH tunnel over DNSTT
   /// Flow: DNSTT tunnel -> SSH client -> SSH dynamic port forwarding -> local SOCKS5 proxy on configured port
   Future<bool> connectSshTunnel({
@@ -1227,7 +1273,9 @@ class VpnService {
   /// Check if SSH tunnel is running
   Future<bool> isSshTunnelConnected() async {
     if (_isDesktop) {
-      return _currentState == VpnState.connected && _isSshTunnelMode && _sshProcess != null;
+      return _currentState == VpnState.connected &&
+          _isSshTunnelMode &&
+          _sshProcess != null;
     }
 
     if (!_platformSupported) {
@@ -1270,6 +1318,38 @@ class VpnService {
     } on PlatformException {
       return false;
     }
+  }
+
+  /// Reconcile cached Flutter state with the native background services.
+  /// This is required when the activity resumes or is recreated while a
+  /// foreground VPN/proxy service is still alive.
+  Future<VpnState> refreshConnectionState() async {
+    if (_isDesktop) return _currentState;
+
+    final sshConnected = await isSshTunnelConnected();
+    final slipstreamProxyConnected = sshConnected
+        ? false
+        : await isSlipstreamProxyConnected();
+    final proxyConnected = sshConnected || slipstreamProxyConnected
+        ? false
+        : await isProxyConnected();
+    final vpnConnected = await isConnected();
+
+    _isSshTunnelMode = sshConnected;
+    _isProxyMode =
+        !sshConnected && (proxyConnected || slipstreamProxyConnected);
+    _activeTransport = slipstreamProxyConnected
+        ? TransportType.slipstream
+        : (proxyConnected ? TransportType.dnstt : _activeTransport);
+    _currentState =
+        (sshConnected ||
+            proxyConnected ||
+            slipstreamProxyConnected ||
+            vpnConnected)
+        ? VpnState.connected
+        : VpnState.disconnected;
+    _stateController.add(_currentState);
+    return _currentState;
   }
 
   String? get connectedDns => _connectedDns;
@@ -1359,15 +1439,16 @@ class VpnService {
     if (!_platformSupported) return -1;
 
     try {
-      final result = await _channel.invokeMethod<int>('testSlipstreamDnsServer', {
-        'dnsServer': dnsServer,
-        'tunnelDomain': tunnelDomain,
-        'testUrl': testUrl,
-        'timeoutMs': timeoutMs,
-        'congestionControl': congestionControl,
-        'keepAliveInterval': keepAliveInterval,
-        'gso': gso,
-      });
+      final result = await _channel
+          .invokeMethod<int>('testSlipstreamDnsServer', {
+            'dnsServer': dnsServer,
+            'tunnelDomain': tunnelDomain,
+            'testUrl': testUrl,
+            'timeoutMs': timeoutMs,
+            'congestionControl': congestionControl,
+            'keepAliveInterval': keepAliveInterval,
+            'gso': gso,
+          });
       return result ?? -1;
     } on MissingPluginException {
       return -1;

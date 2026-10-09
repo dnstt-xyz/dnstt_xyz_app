@@ -35,6 +35,12 @@ class MainActivity : FlutterActivity() {
         const val VPN_STATE_CHANNEL = "xyz.dnstt.app/vpn_state"
         const val VPN_REQUEST_CODE = 1001
         const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
+
+        // SSH lives for as long as the app process/foreground VPN service,
+        // not for as long as one FlutterActivity instance.
+        private var sshDnsttClient: mobile.DnsttClient? = null
+        private var sshTunnelClient: SshTunnelClient? = null
+        private val isSshTunnelRunning = AtomicBoolean(false)
     }
 
     private var methodChannel: MethodChannel? = null
@@ -54,12 +60,6 @@ class MainActivity : FlutterActivity() {
 
     // Proxy-only mode (no VPN) - now uses DnsttProxyService
     private val proxyScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    // SSH tunnel mode (DNSTT + SSH dynamic port forwarding)
-    // sshDnsttClient is the internal DNSTT client used by SSH tunnel (runs on port 7001)
-    private var sshDnsttClient: mobile.DnsttClient? = null
-    private var sshTunnelClient: SshTunnelClient? = null
-    private val isSshTunnelRunning = AtomicBoolean(false)
 
     // Proxy sharing mode
     private val isProxySharingEnabled = AtomicBoolean(false)
@@ -233,6 +233,15 @@ class MainActivity : FlutterActivity() {
                         eventSink?.success(state)
                     }
                 }
+                // EventChannel only delivers future events. Emit a snapshot so
+                // a recreated Flutter UI immediately reflects background state.
+                val currentState = when {
+                    isSshTunnelRunning.get() && sshTunnelClient?.isConnected() == true -> "ssh_tunnel_connected"
+                    DnsttProxyService.isRunning.get() || SlipstreamProxyService.isRunning.get() -> "proxy_connected"
+                    DnsttVpnService.isRunning.get() -> "connected"
+                    else -> "disconnected"
+                }
+                events?.success(currentState)
             }
 
             override fun onCancel(arguments: Any?) {
@@ -1190,36 +1199,10 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         testScope.cancel()
         proxyScope.cancel()
-        // Stop SSH tunnel client if running
-        try {
-            sshTunnelClient?.cleanup()
-            sshTunnelClient = null
-            isSshTunnelRunning.set(false)
-        } catch (e: Exception) {
-            Log.e("DnsttSsh", "Error stopping SSH tunnel on destroy: ${e.message}")
-        }
-        // Stop proxy service if running
-        if (DnsttProxyService.isRunning.get()) {
-            try {
-                val serviceIntent = Intent(this, DnsttProxyService::class.java).apply {
-                    action = DnsttProxyService.ACTION_DISCONNECT
-                }
-                startService(serviceIntent)
-            } catch (e: Exception) {
-                Log.e("DnsttProxy", "Error stopping proxy service on destroy: ${e.message}")
-            }
-        }
-        // Stop slipstream proxy service if running
-        if (SlipstreamProxyService.isRunning.get()) {
-            try {
-                val serviceIntent = Intent(this, SlipstreamProxyService::class.java).apply {
-                    action = SlipstreamProxyService.ACTION_DISCONNECT
-                }
-                startService(serviceIntent)
-            } catch (e: Exception) {
-                Log.e("SlipstreamProxy", "Error stopping slipstream proxy on destroy: ${e.message}")
-            }
-        }
+        // Do not stop SSH here. Activity destruction is a UI lifecycle event;
+        // the foreground VPN service and its tunnel must keep running.
+        // Proxy foreground services are also independent of the activity and
+        // must only stop after an explicit disconnect action.
         DnsttProxyService.stateCallback = null
         SlipstreamProxyService.stateCallback = null
         methodChannel?.setMethodCallHandler(null)

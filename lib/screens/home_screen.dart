@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,13 +20,16 @@ class HomeScreen extends StatefulWidget {
 
 enum ConnectionMode { vpn, proxy }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final VpnService _vpnService = VpnService();
   ConnectionMode _connectionMode = ConnectionMode.vpn;
+  StreamSubscription<VpnState>? _stateSubscription;
+  bool _isReconcilingState = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _vpnService.init();
 
     // Restore saved connection mode
@@ -35,7 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
         : ConnectionMode.vpn;
 
     // Listen to VPN state changes and update app state accordingly
-    _vpnService.stateStream.listen((vpnState) {
+    _stateSubscription = _vpnService.stateStream.listen((vpnState) {
+      if (!mounted) return;
       final appState = Provider.of<AppState>(context, listen: false);
       switch (vpnState) {
         case VpnState.connecting:
@@ -49,19 +54,67 @@ class _HomeScreenState extends State<HomeScreen> {
           appState.setConnectionStatus(ConnectionStatus.disconnected);
           break;
         case VpnState.error:
-          appState.setConnectionStatus(ConnectionStatus.error, 'VPN connection failed');
+          appState.setConnectionStatus(
+            ConnectionStatus.error,
+            'VPN connection failed',
+          );
           break;
       }
     });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _reconcileConnectionState();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _reconcileConnectionState();
+    }
+  }
+
+  Future<void> _reconcileConnectionState() async {
+    if (_isReconcilingState || !mounted) return;
+    _isReconcilingState = true;
+    try {
+      final vpnState = await _vpnService.refreshConnectionState();
+      if (!mounted) return;
+      final appState = Provider.of<AppState>(context, listen: false);
+      switch (vpnState) {
+        case VpnState.connected:
+          appState.setConnectionStatus(ConnectionStatus.connected);
+          break;
+        case VpnState.connecting:
+          appState.setConnectionStatus(ConnectionStatus.connecting);
+          break;
+        case VpnState.error:
+          appState.setConnectionStatus(
+            ConnectionStatus.error,
+            _vpnService.lastError ?? 'VPN connection failed',
+          );
+          break;
+        case VpnState.disconnected:
+        case VpnState.disconnecting:
+          appState.setConnectionStatus(ConnectionStatus.disconnected);
+          break;
+      }
+    } finally {
+      _isReconcilingState = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stateSubscription?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('DNSTT.XYZ'),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('DNSTT.XYZ'), centerTitle: true),
       body: Consumer<AppState>(
         builder: (context, state, _) {
           return SingleChildScrollView(
@@ -112,17 +165,17 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 12),
           Text(
             'Local Proxy Address:',
-            style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[600],
-            ),
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
           ),
           const SizedBox(height: 4),
           Row(
             children: [
               Expanded(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(6),
@@ -145,9 +198,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: InkWell(
                   borderRadius: BorderRadius.circular(6),
                   onTap: () {
-                    Clipboard.setData(ClipboardData(
-                      text: proxyAddress,
-                    ));
+                    Clipboard.setData(ClipboardData(text: proxyAddress));
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text('Address copied!'),
@@ -169,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: ElevatedButton.icon(
               onPressed: () async {
                 final telegramUrl = Uri.parse(
-                  'tg://socks?server=127.0.0.1&port=$proxyPort'
+                  'tg://socks?server=127.0.0.1&port=$proxyPort',
                 );
                 if (await canLaunchUrl(telegramUrl)) {
                   await launchUrl(telegramUrl);
@@ -177,7 +228,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text('Telegram is not installed or cannot open the link'),
+                        content: Text(
+                          'Telegram is not installed or cannot open the link',
+                        ),
                         backgroundColor: Colors.orange,
                       ),
                     );
@@ -204,7 +257,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildVpnConnectionCard(BuildContext context, AppState state) {
     final isConnected = state.connectionStatus == ConnectionStatus.connected;
     final isConnecting = state.connectionStatus == ConnectionStatus.connecting;
-    final isDisconnected = state.connectionStatus == ConnectionStatus.disconnected;
+    final isDisconnected =
+        state.connectionStatus == ConnectionStatus.disconnected;
     final isError = state.connectionStatus == ConnectionStatus.error;
     final canConnect = state.activeConfig != null && state.activeDns != null;
 
@@ -247,13 +301,19 @@ class _HomeScreenState extends State<HomeScreen> {
                   color: isConnected
                       ? Colors.green
                       : isConnecting
-                          ? Colors.orange
-                          : isError
-                              ? Colors.red[700]
-                              : (canConnect ? Colors.grey[700] : Colors.grey[400]),
+                      ? Colors.orange
+                      : isError
+                      ? Colors.red[700]
+                      : (canConnect ? Colors.grey[700] : Colors.grey[400]),
                   boxShadow: [
                     BoxShadow(
-                      color: (isConnected ? Colors.green : isConnecting ? Colors.orange : Colors.grey).withOpacity(0.3),
+                      color:
+                          (isConnected
+                                  ? Colors.green
+                                  : isConnecting
+                                  ? Colors.orange
+                                  : Colors.grey)
+                              .withOpacity(0.3),
                       blurRadius: 20,
                       spreadRadius: 5,
                     ),
@@ -261,11 +321,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 child: Center(
                   child: isConnecting
-                      ? const Icon(
-                          Icons.close,
-                          size: 60,
-                          color: Colors.white,
-                        )
+                      ? const Icon(Icons.close, size: 60, color: Colors.white)
                       : Icon(
                           isError ? Icons.refresh : Icons.power_settings_new,
                           size: 60,
@@ -295,8 +351,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(
                   statusText,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
@@ -362,7 +418,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     style: TextStyle(color: Colors.grey[600], fontSize: 14),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: state.activeConfig!.tunnelType == TunnelType.ssh
                           ? Colors.purple[100]
@@ -370,7 +429,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      state.activeConfig!.tunnelType == TunnelType.ssh ? 'SSH' : 'Socks',
+                      state.activeConfig!.tunnelType == TunnelType.ssh
+                          ? 'SSH'
+                          : 'Socks',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -382,7 +443,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(width: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: state.activeConfig!.isSlipstream
                           ? Colors.orange[100]
@@ -436,10 +500,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 16),
               Text(
                 'Select a config and DNS server to connect',
-                style: TextStyle(
-                  color: Colors.grey[600],
-                  fontSize: 12,
-                ),
+                style: TextStyle(color: Colors.grey[600], fontSize: 12),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -451,7 +512,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
 
             // Show proxy notice when connected in proxy mode (desktop or Android proxy mode)
-            if (isConnected && (VpnService.isDesktopPlatform || _vpnService.isProxyMode || (_vpnService.isSshTunnelMode && _connectionMode == ConnectionMode.proxy))) ...[
+            if (isConnected &&
+                (VpnService.isDesktopPlatform ||
+                    _vpnService.isProxyMode ||
+                    (_vpnService.isSshTunnelMode &&
+                        _connectionMode == ConnectionMode.proxy))) ...[
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 12),
@@ -480,7 +545,10 @@ class _HomeScreenState extends State<HomeScreen> {
             isSelected: _connectionMode == ConnectionMode.vpn,
             onTap: () {
               setState(() => _connectionMode = ConnectionMode.vpn);
-              Provider.of<AppState>(context, listen: false).setConnectionMode('vpn');
+              Provider.of<AppState>(
+                context,
+                listen: false,
+              ).setConnectionMode('vpn');
             },
           ),
           const SizedBox(width: 4),
@@ -491,7 +559,10 @@ class _HomeScreenState extends State<HomeScreen> {
             isSelected: _connectionMode == ConnectionMode.proxy,
             onTap: () {
               setState(() => _connectionMode = ConnectionMode.proxy);
-              Provider.of<AppState>(context, listen: false).setConnectionMode('proxy');
+              Provider.of<AppState>(
+                context,
+                listen: false,
+              ).setConnectionMode('proxy');
             },
           ),
         ],
@@ -561,10 +632,7 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(width: 8),
         Text(
           '$label: ',
-          style: TextStyle(
-            color: Colors.grey[600],
-            fontSize: 14,
-          ),
+          style: TextStyle(color: Colors.grey[600], fontSize: 14),
         ),
         Expanded(
           child: Text(
@@ -625,9 +693,9 @@ class _HomeScreenState extends State<HomeScreen> {
           title: 'Support Us',
           subtitle: 'Donate to help improve the app',
           onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const DonateScreen()),
-              ),
+            context,
+            MaterialPageRoute(builder: (_) => const DonateScreen()),
+          ),
           color: Colors.red,
         ),
         const SizedBox(height: 12),
@@ -699,10 +767,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 8),
               Text(
                 'Note: Change takes effect on next connection.',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[600],
-                ),
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
               ),
               const Divider(),
               const SizedBox(height: 8),
@@ -774,13 +839,28 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _connect(BuildContext context, AppState state) async {
+    // Native services may have remained connected while the Flutter activity
+    // was backgrounded or recreated. Never start a second tunnel on top of it.
+    final actualState = await _vpnService.refreshConnectionState();
+    if (actualState == VpnState.connected) {
+      state.setConnectionStatus(ConnectionStatus.connected);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Connection is already active')),
+        );
+      }
+      return;
+    }
+
     if (state.useAutoDns) {
       await state.refreshAutoDns();
       if (state.activeDns == null) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(state.autoDnsError ?? 'Could not detect system DNS'),
+              content: Text(
+                state.autoDnsError ?? 'Could not detect system DNS',
+              ),
               backgroundColor: Colors.red,
             ),
           );
@@ -792,7 +872,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDesktop = VpnService.isDesktopPlatform;
     final isSshTunnel = state.activeConfig?.tunnelType == TunnelType.ssh;
     final isSlipstream = state.activeConfig?.isSlipstream ?? false;
-    final useProxyMode = isDesktop || (Platform.isAndroid && _connectionMode == ConnectionMode.proxy);
+    final useProxyMode =
+        isDesktop ||
+        (Platform.isAndroid && _connectionMode == ConnectionMode.proxy);
 
     // Determine connection type for permission and messages
     String connectionType;
@@ -800,7 +882,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (isSshTunnel) {
       connectionType = useProxyMode ? 'SSH tunnel (proxy)' : 'SSH tunnel (VPN)';
     } else {
-      connectionType = useProxyMode ? '$protocolName proxy' : '$protocolName VPN';
+      connectionType = useProxyMode
+          ? '$protocolName proxy'
+          : '$protocolName VPN';
     }
 
     // Validate SSH settings if SSH tunnel type
@@ -810,7 +894,9 @@ class _HomeScreenState extends State<HomeScreen> {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('SSH username is required. Please configure in settings.'),
+              content: Text(
+                'SSH username is required. Please configure in settings.',
+              ),
               backgroundColor: Colors.red,
             ),
           );
@@ -919,11 +1005,13 @@ class _HomeScreenState extends State<HomeScreen> {
       if (success) {
         String successMessage;
         if (isSshTunnel && useProxyMode) {
-          successMessage = 'SSH tunnel (proxy) started on ${_vpnService.socksProxyAddress}';
+          successMessage =
+              'SSH tunnel (proxy) started on ${_vpnService.socksProxyAddress}';
         } else if (isSshTunnel && !useProxyMode) {
           successMessage = 'SSH tunnel (VPN) connected';
         } else if (useProxyMode || isDesktop) {
-          successMessage = '$protocolName proxy started on ${_vpnService.socksProxyAddress}';
+          successMessage =
+              '$protocolName proxy started on ${_vpnService.socksProxyAddress}';
         } else {
           successMessage = '$protocolName VPN connected';
         }
@@ -937,9 +1025,11 @@ class _HomeScreenState extends State<HomeScreen> {
         final error = _vpnService.lastError;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(error != null
-                ? 'Failed to start $connectionType: $error'
-                : 'Failed to start $connectionType'),
+            content: Text(
+              error != null
+                  ? 'Failed to start $connectionType: $error'
+                  : 'Failed to start $connectionType',
+            ),
             backgroundColor: Colors.red,
           ),
         );
@@ -969,9 +1059,9 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         disconnectMessage = 'VPN disconnected';
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(disconnectMessage)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(disconnectMessage)));
     }
   }
 
@@ -986,9 +1076,9 @@ class _HomeScreenState extends State<HomeScreen> {
     state.setConnectionStatus(ConnectionStatus.disconnected);
 
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connection cancelled')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Connection cancelled')));
     }
   }
 }
